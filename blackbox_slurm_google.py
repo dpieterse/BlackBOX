@@ -305,7 +305,7 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                 python_cmdstr = (
                     'python /Software/BlackBOX/blackbox.py --telescope {} '
                     '--img_reduce True --cat_extract True --trans_extract True '
-                    '--force_reproc_new True --image {}'
+                    '--force_reproc_new False --image {}'
                     .format(tel, filename))
 
                 log.info ('python command string to execute: {}'
@@ -349,7 +349,7 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                                 #partition = 'p4gb32'
                                 partition = 'p8gb32t'
 
-                            if ngaia > 1e6:
+                            if ngaia > 2e6:
                                 #partition = 'p8gb64'
                                 partition = 'p16gb64t'
 
@@ -619,6 +619,7 @@ def slurm_process (python_cmdstr, partition, runtime, jobname, jobnight):
         # create SLURM batch job in date_eve subfolder of nightjobs
         # folder with name based on input jobname
         jobfile = '{}/{}.sh'.format(jobnight, jobname)
+        log.info ('creating batch jobfile: {}'.format(jobfile))
         with open(jobfile, 'w') as f:
 
             f.write ('#!/bin/bash\n')
