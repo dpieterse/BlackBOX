@@ -314,14 +314,14 @@ def buildref (telescope=None, fits_hdrtable_list=None, date_start=None,
         # digits only
         for i_field, field_ID in enumerate(field_ID_list):
             if field_ID.isdigit() and len(field_ID)!=5:
-                field_ID_list[i_field] = '{:0>5}'.format(field_ID)
+                field_ID_list[i_field] = '{:05d}'.format(field_ID)
 
 
         # prepare mask where presence of (header) table object entry
         # is checked against any of the field IDs in field_ID_list;
         # this mask will contain len(table) * len(field_ID_list)
         # entries
-        mask = [fnmatch.fnmatch('{:0>5}'.format(obj), field_ID)
+        mask = [fnmatch.fnmatch('{:05d}'.format(obj), field_ID)
                 for field_ID in field_ID_list
                 for obj in table['OBJECT']]
         # reshape the mask to shape (len(field_ID_list, len(table))
@@ -484,7 +484,7 @@ def buildref (telescope=None, fits_hdrtable_list=None, date_start=None,
                 radec = (table_grid['ra_c'][mask_grid][0],
                          table_grid['dec_c'][mask_grid][0])
             else:
-                log.error ('field ID/OBJECT {} not present in ML/BG '
+                log.error ('field ID/OBJECT {:05d} not present in ML/BG '
                            'grid definition file {}; skipping it'
                            .format(obj, mlbg_fieldIDs))
                 continue
@@ -544,14 +544,14 @@ def buildref (telescope=None, fits_hdrtable_list=None, date_start=None,
             # combination
             mask = (mask_obj & (table['FILTER'] == filt))
             nfiles = np.sum(mask)
-            log.info ('{} files left for {} in filter {}'
+            log.info ('{} files left for field ID {:05d} in filter {}'
                       .format(nfiles, obj, filt))
 
             # if too few files left, continue
             if nfiles < nmin:
                 log.warning ('fewer images ({}) available than the minimum '
                              'number required ({}); not creating co-add '
-                             'for {} in filter {}'
+                             'for field {:05d} in filter {}'
                              .format(nfiles, nmin, obj, filt))
                 continue
 
@@ -606,7 +606,7 @@ def buildref (telescope=None, fits_hdrtable_list=None, date_start=None,
                 if np.sum(mask_use) < nmin:
                     log.warning ('fewer images ({}) available than the minimum '
                                  'number required ({}); not creating co-add '
-                                 'for {} in filter {}'
+                                 'for field {:05d} in filter {}'
                                  .format(np.sum(mask_use), nmin, obj, filt))
                     continue
 
@@ -618,8 +618,8 @@ def buildref (telescope=None, fits_hdrtable_list=None, date_start=None,
 
                     np.place (mask, mask, mask_use)
                     nfiles = np.sum(mask)
-                    log.info ('{} files left for {} in filter {} after '
-                              'selecting images within seeing spread'
+                    log.info ('{} files left for field {:05d} in filter {} '
+                              'after selecting images within seeing spread'
                               .format(nfiles, obj, filt))
 
                 else:
@@ -772,8 +772,8 @@ def buildref (telescope=None, fits_hdrtable_list=None, date_start=None,
 
             limmag_proj = limmags_sort_cum[mask_sort_cum][-1]
 
-            log.info ('field {} projected (target) {}-band limiting magnitude '
-                      'of co-add: {:.2f} ({}), using {} files'
+            log.info ('field {:05d} projected (target) {}-band limiting '
+                      'magnitude of co-add: {:.2f} ({}), using {} files'
                       .format(obj, filt, limmag_proj, limmag_target,
                               nfiles_used))
 
@@ -908,10 +908,10 @@ def prep_colfig (field_ID, filters):
     # determine reference directory and file
     if ref_mode:
         # set according to definition in setttings file
-        ref_path = '{}/{:0>5}'.format(get_par(set_bb.ref_dir,tel), field_ID)
+        ref_path = '{}/{:05d}'.format(get_par(set_bb.ref_dir,tel), field_ID)
     else:
         # set to input parameter results_dir = global parameter dir_results
-        ref_path = '{}/{:0>5}'.format(dir_results, field_ID)
+        ref_path = '{}/{:05d}'.format(dir_results, field_ID)
 
         # add extension to field_ID subfolder
         if ext is not None:
@@ -928,12 +928,12 @@ def prep_colfig (field_ID, filters):
 
     for filt in filters:
 
-        image = '{}/{}_{:0>5}_{}_red.fits'.format(ref_path, tel, field_ID, filt)
+        image = '{}/{}_{:05d}_{}_red.fits'.format(ref_path, tel, field_ID, filt)
         exists, image = bb.already_exists(image, get_filename=True)
 
         if not exists:
             log.info ('{} does not exist; not able to prepare color '
-                      'figure for field_ID {:0>5}'.format(image, field_ID))
+                      'figure for field_ID {:05d}'.format(image, field_ID))
             return
         else:
 
@@ -953,7 +953,7 @@ def prep_colfig (field_ID, filters):
                 images_zp.append(header[key])
             else:
                 log.info ('missing header keyword {}; not able to '
-                          'prepare color figure for field_ID {:0>5}'
+                          'prepare color figure for field_ID {:05d}'
                           .format(key, field_ID))
                 return
 
@@ -969,7 +969,7 @@ def prep_colfig (field_ID, filters):
     vmax_b = f_max * images_std[2]
 
     # make color figure
-    colfig = '{}/{}_{:0>5}_{}.png'.format(ref_path, tel, field_ID, filters)
+    colfig = '{}/{}_{:05d}_{}.png'.format(ref_path, tel, field_ID, filters)
     aplpy.make_rgb_image(images_rgb, colfig,
                          vmin_r=vmin_r, vmax_r=vmax_r,
                          vmin_g=vmin_g, vmax_g=vmax_g,
@@ -982,7 +982,7 @@ def ref_already_exists (ref_path, tel, field_ID, filt, get_filename=False):
 
     # list files in ref_path with search string _[fieldID]_[filt]
     # and ending with _red.fits.fz
-    list_ref = zogy.list_files(ref_path, search_str='_{:0>5}_{}_'
+    list_ref = zogy.list_files(ref_path, search_str='_{:05d}_{}_'
                                .format(field_ID, filt), end_str='_red.fits.fz')
 
     # initialize exists and filename
@@ -997,7 +997,7 @@ def ref_already_exists (ref_path, tel, field_ID, filt, get_filename=False):
             idx_latest = np.argsort(dates)[-1]
             filename = list_ref[idx_latest]
             log.warning ('multiple reference images with the same field ID/'
-                         'filter combination {:0>5}/{} present in {}:\n{}\n'
+                         'filter combination {:05d}/{} present in {}:\n{}\n'
                          'returning the latest one: {}'
                          .format(field_ID, filt, ref_path, list_ref, filename))
 
@@ -1021,10 +1021,10 @@ def prep_ref (imagelist, field_ID, filt, radec, image_size, nfiles, limmag_proj,
     # determine and create reference directory
     if ref_mode:
         # set according to definition in blackbox settings file
-        ref_path = '{}/{:0>5}'.format(get_par(set_bb.ref_dir,tel), field_ID)
+        ref_path = '{}/{:05d}'.format(get_par(set_bb.ref_dir,tel), field_ID)
     else:
         # set to input parameter results_dir = global parameter dir_results
-        ref_path = '{}/{:0>5}'.format(dir_results, field_ID)
+        ref_path = '{}/{:05d}'.format(dir_results, field_ID)
 
         # add extension to field_ID subfolder
         if ext is not None:
@@ -1043,7 +1043,7 @@ def prep_ref (imagelist, field_ID, filt, radec, image_size, nfiles, limmag_proj,
 
 
     # name of output file, including full path
-    ref_fits_out = '{}/{}_{:0>5}_{}_red.fits'.format(ref_path, tel,
+    ref_fits_out = '{}/{}_{:05d}_{}_red.fits'.format(ref_path, tel,
                                                      field_ID, filt)
 
 
@@ -1100,7 +1100,7 @@ def prep_ref (imagelist, field_ID, filt, radec, image_size, nfiles, limmag_proj,
                 # same sets of images, return
                 log.info ('imagelist_new: {}'.format(imagelist_new))
                 log.info ('imagelist_used: {}'.format(imagelist_used))
-                log.info ('reference image of {:0>5} in filter {} with same '
+                log.info ('reference image of {:05d} in filter {} with same '
                           'set of images already present; not remaking it'
                           .format(field_ID, filt))
                 return
@@ -1113,7 +1113,7 @@ def prep_ref (imagelist, field_ID, filt, radec, image_size, nfiles, limmag_proj,
 
 
     # prepare temporary folder
-    tmp_path = ('{}/{:0>5}/{}'.format(get_par(set_bb.tmp_dir,tel), field_ID,
+    tmp_path = ('{}/{:05d}/{}'.format(get_par(set_bb.tmp_dir,tel), field_ID,
                                       ref_fits_out.split('/')[-1]
                                       .replace('.fits','')))
 
@@ -1154,7 +1154,7 @@ def prep_ref (imagelist, field_ID, filt, radec, image_size, nfiles, limmag_proj,
     # check if sufficient images available to combine
     if len(imagelist) == 0:
 
-        log.error ('no images available to combine for field ID {:0>5} '
+        log.error ('no images available to combine for field ID {:05d} '
                    'in filter {}'.format(field_ID, filt))
         bb.clean_tmp(tmp_path, get_par(set_br.keep_tmp,tel))
         bb.close_log(log, logfile)
@@ -1169,7 +1169,7 @@ def prep_ref (imagelist, field_ID, filt, radec, image_size, nfiles, limmag_proj,
 
 
         if len(imagelist) == 1:
-            log.warning ('only a single image available for field ID {:0>5} in '
+            log.warning ('only a single image available for field ID {:05d} in '
                          'filter {}; using it as the reference image'
                          .format(field_ID, filt))
 
@@ -1329,7 +1329,7 @@ def prep_ref (imagelist, field_ID, filt, radec, image_size, nfiles, limmag_proj,
                             zogy.remove_files (oldfiles, verbose=True)
                         else:
                             # or move them to the ref-old folder instead
-                            old_path = '{}-old/{:0>5}'.format(
+                            old_path = '{}-old/{:05d}'.format(
                                 get_par(set_bb.ref_dir,tel), field_ID)
 
                             log.info ('moving old reference image files to {}'
