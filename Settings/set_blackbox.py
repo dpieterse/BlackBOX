@@ -105,7 +105,7 @@ proc_env_subdir = proc_env_dict[proc_env]
 for tel in ['ML1']:
 
     # raw bucket does not depend on the processing environment
-    raw_dir[tel] = '/idia/projects/meerlicht/ML1/raw' #point to original raw dir
+    raw_dir[tel] = '{}/raw/{}'.format(run_dir_base[tel], tel)
     # neither does the tmp folder
     tmp_dir[tel] = '{}/{}'.format(tmp_dir_base[tel], tel)
 
