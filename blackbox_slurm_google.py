@@ -77,11 +77,10 @@ obs_height = 2383
 obs_timezone = 'America/Santiago'
 
 # Email settings
-sender = 'Paul Vreeswijk <paul.vreeswijk@blackgem.org>'
+sender = 'BG Admin <bg-admin@blackgem.org>'
 # comma-separated email addresses of recipients
 recipients = 'bg-nightreports@blackgem.org'
-#recipients = 'paul.vreeswijk@blackgem.org'
-reply_to = 'paul.vreeswijk@blackgem.org'
+reply_to = 'bg-admin@blackgem.org'
 smtp_server = 'smtp-relay.gmail.com'
 port = 465
 use_SSL = True
@@ -635,7 +634,7 @@ def slurm_process (python_cmdstr, partition, runtime, jobname, jobnight):
             f.write ('#SBATCH --open-mode=append\n')
             f.write ('#SBATCH --output={}/{}.out\n'.format(jobnight, jobname))
             f.write ('#SBATCH --error={}/{}.err\n'.format(jobnight, jobname))
-            f.write ('#SBATCH --mail-user=paul.vreeswijk@blackgem.org\n')
+            f.write ('#SBATCH --mail-user=danielle@blackgem.org\n')
             f.write ('#SBATCH --mail-type=FAIL,TIME_LIMIT\n')
             f.write ('\n')
             f.write ('export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK\n')
@@ -1015,7 +1014,7 @@ def count_redflags(catlist, key='QC-FLAG'):
 def send_email (recipients, subject, body,
                 attachments=None,
                 sender='Radboud GW Alert <scheduler@blackgem.org>',
-                reply_to='p.vreeswijk@astro.ru.nl',
+                reply_to='bg-admin@blackgem.org',
                 smtp_server='smtp-relay.gmail.com',
                 port=465, use_SSL=True):
 

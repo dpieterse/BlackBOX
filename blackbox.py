@@ -3612,7 +3612,7 @@ def count_redflags(catlist, key='QC-FLAG'):
 def send_email (recipients, subject, body,
                 attachments=None,
                 sender='Radboud GW Alert <scheduler@blackgem.org>',
-                reply_to='p.vreeswijk@astro.ru.nl',
+                reply_to='bg-admin@blackgem.org',
                 smtp_server='smtp-relay.gmail.com',
                 port=465, use_SSL=True):
 

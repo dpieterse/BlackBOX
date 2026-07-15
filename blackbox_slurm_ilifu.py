@@ -479,7 +479,7 @@ def slurm_process (python_cmdstr, nthreads, runtime, jobname, jobnight,
             f.write ('#SBATCH --open-mode=append\n')
             f.write ('#SBATCH --output={}/{}.out\n'.format(jobnight, jobname))
             f.write ('#SBATCH --error={}/{}.err\n'.format(jobnight, jobname))
-            f.write ('#SBATCH --mail-user=paul.vreeswijk@blackgem.org\n')
+            f.write ('#SBATCH --mail-user=danielle@blackgem.org\n')
             f.write ('#SBATCH --mail-type=FAIL,TIME_LIMIT\n')
             f.write ('\n')
             f.write ('export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK\n')
