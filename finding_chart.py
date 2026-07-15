@@ -68,7 +68,7 @@ def main():
 
     parser.add_argument('fits_red', type=str,
                         help='BG/ML reduced filename (e.g. '
-                        '/idia/projects/meerlicht/ML1/red/2022/12/31/ML1_20221231_184851_red.fits.fz '
+                        '/idia/projects/meerlicht/data/red/ML1/2022/12/31/ML1_20221231_184851_red.fits.fz '
                         'or gs://blackgem-red/BG4/2024/01/13/BG4_20240114_060714_red.fits.fz); '
                         'full path required; no default')
 

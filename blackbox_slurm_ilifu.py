@@ -44,11 +44,11 @@ __version__ = '0.7'
 # settings files
 tel = 'ML1'
 data_dir = '/idia/projects/meerlicht'
-raw_dir = '{}/{}/raw'.format(data_dir, tel)
-red_dir = '{}/{}/red'.format(data_dir, tel)
-genlog_dir = '{}/{}/log'.format(data_dir, tel)
+raw_dir = '{}/data/raw/{}'.format(data_dir, tel)
+red_dir = '{}/data/red/{}'.format(data_dir, tel)
+genlog_dir = '{}/RunBlackBOX/log'.format(data_dir)
 # folder in which to run/save jobs and logs for the nightly processing
-job_dir = '{}/Slurm'.format(genlog_dir)
+job_dir = '{}/Slurm/{}'.format(genlog_dir, tel)
 
 # calibration folder and field grid file
 cal_dir = '{}/CalFiles'.format(data_dir)
