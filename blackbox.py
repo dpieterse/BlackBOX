@@ -7805,7 +7805,12 @@ def copy_flist (filelist, dest, move=False, verbose=True):
         for src_file in filelist:
 
             if not move:
-                shutil.copy2(src_file, dest)
+                try:
+                    shutil.copy2(src_file, dest)
+                except PermissionError as e:
+                    log.warning('could not copy timestamps/metadata/permissions '
+                    'for {} -> {} ({}). file data was copied successfully though'
+                    .format(src_file, dest, e))
             else:
 
                 # input [dest] can be a file or directory, construct two possible
@@ -7916,7 +7921,13 @@ def copy_file (src_file, dest, move=False, verbose=True):
         else:
 
             if not move:
-                shutil.copy2(src_file, dest)
+                try:
+                    shutil.copy2(src_file, dest)
+                except PermissionError as e:
+                    log.warning('could not copy timestamps/metadata/permissions '
+                    'for {} -> {} ({}). file data was copied successfully though'
+                    .format(src_file, dest, e))
+
             else:
 
                 # if destination file already exists, remove it
