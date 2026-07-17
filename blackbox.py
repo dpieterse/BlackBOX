@@ -2734,6 +2734,10 @@ def save_png_thumbnails (fits_trans, dir_dest, tel=None, nthreads=1):
             else:
                 make_dir (dir_dest, empty=True)
 
+        # Create the destination folder if it doesn't exist yet and if it's not
+        # a Google Cloud bucket.
+        elif dir_dest[0:5] != 'gs://':
+            make_dir (dir_dest, empty=True)
 
         # copy or move to destination folder; if the destination is a
         # Google Cloud bucket, then copying one by one just after
