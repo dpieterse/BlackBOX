@@ -695,7 +695,7 @@ class FileWatcher(FileSystemEventHandler, object):
 
 def read_hdulist (fits_file, get_data=True, get_header=False,
                   ext_name_indices=None, dtype=None, columns=None,
-                  memmap=True):
+                  memmap=None):
 
     """Function to read the data (if [get_data] is True) and/or header (if
     [get_header] is True) of the input [fits_file].  The fits file can

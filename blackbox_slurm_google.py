@@ -1142,7 +1142,7 @@ def get_path (date, dir_type, tel):
 ################################################################################
 
 def read_hdulist (fits_file, get_data=True, get_header=False,
-                  ext_name_indices=None, dtype=None, memmap=True):
+                  ext_name_indices=None, dtype=None, memmap=None):
 
     """Function to read the data (if [get_data] is True) and/or header
     (if [get_header] is True) of the input [fits_file].  The fits file
