@@ -233,7 +233,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
                     try:
                         # extract field ID from header
                         header = read_hdulist(filename, get_data=False,
-                                              get_header=True)
+                                              get_header=True, memmap=None)
                         if 'OBJECT' in header:
                             field_id = int(header['OBJECT'])
                             # set nthreads depending on ngaia
@@ -640,7 +640,7 @@ def get_file (queue):
 
             try:
                 # read the file
-                data = read_hdulist(filename)
+                data = read_hdulist(filename, memmap=None)
 
             except:
 
@@ -695,7 +695,7 @@ class FileWatcher(FileSystemEventHandler, object):
 
 def read_hdulist (fits_file, get_data=True, get_header=False,
                   ext_name_indices=None, dtype=None, columns=None,
-                  memmap=None):
+                  memmap=True):
 
     """Function to read the data (if [get_data] is True) and/or header (if
     [get_header] is True) of the input [fits_file].  The fits file can

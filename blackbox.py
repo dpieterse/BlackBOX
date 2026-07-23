@@ -561,7 +561,7 @@ def get_file (queue):
 
             try:
                 # read the file
-                data = read_hdulist(filename)
+                data = read_hdulist(filename, memmap=None)
 
             except:
 
@@ -1006,7 +1006,8 @@ def get_filename_red (fits_raw):
     """determine reduced filename from raw fits header"""
 
     # read header
-    header = read_hdulist(fits_raw, get_data=False, get_header=True)
+    header = read_hdulist(fits_raw, get_data=False, get_header=True,
+                          memmap=None)
 
     # use [set_header] to update raw header so that also DATE-OBS
     # is updated to be mid-exposure time
@@ -1043,7 +1044,8 @@ def blackbox_reduce (filename):
 
     # just read the header for the moment
     try:
-        header = read_hdulist(filename, get_data=False, get_header=True)
+        header = read_hdulist(filename, get_data=False, get_header=True,
+                              memmap=None)
     except Exception as e:
         #log.exception (traceback.format_exc())
         log.exception ('exception was raised in read_hdulist at top of '
@@ -1448,7 +1450,7 @@ def blackbox_reduce (filename):
 
         # now also read in the raw image data
         try:
-            data = read_hdulist(filename, dtype='float32')
+            data = read_hdulist(filename, dtype='float32', memmap=None)
         except:
             log.exception('problem reading image {}; leaving function '
                           'blackbox_reduce'.format(filename))
@@ -3202,18 +3204,22 @@ def verify_header (filename, htypes=None):
         'TQC-FLAG': {'htype':'trans', 'dtype':str,   'DB':True,  'None_OK':False},
     }
 
+    # force [htypes] to be a list
+    htypes_list = list(htypes)
+
     # read header of filename
     if isfile (filename):
-        header = read_hdulist (filename, get_data=False, get_header=True)
+        if 'raw' in htypes_list:
+            header = read_hdulist (filename, get_data=False, get_header=True,
+                                   memmap=None)
+        else:
+            header = read_hdulist (filename, get_data=False, get_header=True)
     else:
         # return success=False if it does not exist
         log.warning ('file {} does not exist; not able to verify its header'
                      .format(filename))
         return False
 
-
-    # force [htypes] to be a list
-    htypes_list = list(htypes)
 
     # loop keys in dict_head
     for key in dict_head.keys():
@@ -7625,7 +7631,8 @@ def sort_files(read_path, search_str, recursive=False):
 
     for i, filename in enumerate(all_files): #loop through raw files
 
-        header = read_hdulist(filename, get_data=False, get_header=True)
+        header = read_hdulist(filename, get_data=False, get_header=True,
+                              memmap=None)
 
         if 'IMAGETYP' not in header:
             log.info ('keyword IMAGETYP not present in header of image; '
