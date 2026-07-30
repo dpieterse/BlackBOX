@@ -561,7 +561,7 @@ def get_file (queue):
 
             try:
                 # read the file
-                data = read_hdulist(filename)
+                data = read_hdulist(filename, memmap=None)
 
             except:
 
@@ -1448,7 +1448,7 @@ def blackbox_reduce (filename):
 
         # now also read in the raw image data
         try:
-            data = read_hdulist(filename, dtype='float32')
+            data = read_hdulist(filename, dtype='float32', memmap=None)
         except:
             log.exception('problem reading image {}; leaving function '
                           'blackbox_reduce'.format(filename))

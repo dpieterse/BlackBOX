@@ -640,7 +640,7 @@ def get_file (queue):
 
             try:
                 # read the file
-                data = read_hdulist(filename)
+                data = read_hdulist(filename, memmap=None)
 
             except:
 
