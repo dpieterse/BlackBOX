@@ -1214,6 +1214,8 @@ def blackbox_reduce (filename):
 
             ref_present = False
             ref_fits_in = None
+            log.info ('no {}-band reference image found for field {}'
+                      .format(obj, filt))
 
         else:
 
