@@ -7,6 +7,7 @@ import sys
 import calendar
 import warnings
 import socket
+import zipfile
 
 #import multiprocessing as mp
 #mp_ctx = mp.get_context('spawn')
@@ -119,7 +120,7 @@ except Exception as e:
                  'blackbox; issue with IERS file?: {}'.format(e))
 
 
-__version__ = '1.5.1'
+__version__ = '1.5.2'
 keywords_version = '1.2.2'
 
 
@@ -2587,8 +2588,8 @@ def blackbox_reduce (filename):
         # create png thumbnails for database
         if get_par(set_bb.save_thumbnails_pngs,tel):
             #and qc_flag != 'red' and tqc_flag != 'red':
-            dir_dest = '{}/{}'.format(thumbnails_path, tmp_base.split('/')[-1])
-            save_png_thumbnails (fits_tmp_trans, dir_dest, tel=tel,
+            zip_dest = '{}/{}.zip'.format(thumbnails_path, tmp_base.split('/')[-1])
+            save_png_thumbnails (fits_tmp_trans, zip_dest, tel=tel,
                                  nthreads=set_bb.nthreads)
 
 
@@ -2673,16 +2674,15 @@ def blackbox_reduce (filename):
 
 ################################################################################
 
-def save_png_thumbnails (fits_trans, dir_dest, tel=None, nthreads=1):
+def save_png_thumbnails (fits_trans, zip_dest, tel=None, nthreads=1):
 
     """function to convert thumbnails in transient catalog
     [fits_trans] to separate png files (to be used by the Database)
     with names [number]_RED.png, [number]_REF.png, [number]_D.png,
     [number]_SCORR.png, where number is the row number - also
     indicated by the NUMBER column - in [fits_trans]. The pngs are
-    copied/moved to [dest_folder].
-
-    """
+    bundled together into an uncompressed zip file, which is copied/
+    moved to [zip_dest]."""
 
     log.info ('running save_png_thumbnails')
 
@@ -2704,42 +2704,37 @@ def save_png_thumbnails (fits_trans, dir_dest, tel=None, nthreads=1):
         cols2save = ['THUMBNAIL_{}'.format(c) for c in cols2save]
 
 
-        # define tmp folder to put the pngs, which is a subfolder in
+        # define tmp folder to put the pngs, which is a subfolder of
         # the tmp folder with the image basename, making it more
-        # efficient to copy the files to a bucket
+        # efficient to zip the files. Ensure it's empty
         dir_tmp = '{}/thumbnails'.format(os.path.dirname(fits_trans))
-        # make it
-        make_dir(dir_tmp)
-
+        make_dir(dir_tmp, empty=True)
 
         # use multiprocessing to process rows in fits_trans, creating
         # pngs in subfolder of tmp folder
         pool_func (save_thumbs_row, range(nrows), fits_trans,
                    cols2save, dir_tmp, nproc=nthreads)
 
-
-
-        # search string to identify the pngs created (to distinguish
-        # them from other png files in tmp folder)
+        # List the thumbnail pngs created
         search_str = '{}/[0-9]*_[DRS]*.png'.format(dir_tmp)
+        filenames_png = sorted(glob.glob(search_str))
 
+        # Zip the thumbnails into an uncompressed bundle
+        zip_tmp = '{}/thumbnails.zip'.format(dir_tmp)
+        with zipfile.ZipFile(zip_tmp, 'w',
+                             compression=zipfile.ZIP_STORED) as zf:
+            for png_file in filenames_png:
+                zf.write(png_file, arcname=os.path.basename(png_file))
 
-        # make sure destination folder is empty, otherwise different
-        # reductions of the same image might lead to a mix of pngs
-        if isdir(dir_dest):
-            log.warning ('removing all existing thumbnails in {}'.format(dir_dest))
-            if dir_dest[0:5] == 'gs://':
-                #cmd = ['gcloud', 'storage', 'rm', '--recursive',
-                #       '{}'.format(dir_dest), '--no-user-output-enabled']
-                cmd = ['gsutil', '-m', '-q', 'rm', '{}/*'.format(dir_dest)]
-                result = subprocess.run(cmd)
-            else:
-                make_dir (dir_dest, empty=True)
+        # make sure the destination zip file doesn't exist yet
+        if isfile(zip_dest):
+            log.warning ('removing thumbnails bundle {}'.format(zip_dest))
+            remove_files([zip_dest])
 
         # Create the destination folder if it doesn't exist yet and if it's not
         # a Google Cloud bucket.
-        elif dir_dest[0:5] != 'gs://':
-            make_dir (dir_dest, empty=True)
+        if zip_dest[0:5] != 'gs://':
+            make_dir (os.path.dirname(zip_dest))
 
         # copy or move to destination folder; if the destination is a
         # Google Cloud bucket, then copying one by one just after
@@ -2747,36 +2742,26 @@ def save_png_thumbnails (fits_trans, dir_dest, tel=None, nthreads=1):
         # 1min for 100 files), so best to copy/move them with single
         # command here
         move = (not get_par(set_bb.keep_tmp,tel))
-        if dir_dest[0:5] == 'gs://':
+        if zip_dest[0:5] == 'gs://':
 
             if move:
                 cp_cmd = 'mv'
             else:
                 cp_cmd = 'cp'
 
-
             # gsutil command (not actively supported anymore)
-            cmd = ['gsutil', '-m', '-q', cp_cmd, search_str, dir_dest]
+            cmd = ['gsutil', '-m', '-q', cp_cmd, zip_tmp, zip_dest]
             # gcloud storage alternative; best to use cp command
-            #cmd = ['gcloud', 'storage', 'cp', '--recursive',
-            #       dir_tmp, dir_dest, '--no-user-output-enabled']
+            #cmd = ['gcloud', 'storage', 'cp', zip_tmp, zip_dest,
+            #       '--no-user-output-enabled']
             result = subprocess.run(cmd)
 
-
-            # remove thumbnails from tmp folder if not kept
-            if not get_par(set_bb.keep_tmp,tel):
-                shutil.rmtree(dir_tmp, ignore_errors=True)
-
-
         else:
+            copy_file (zip_tmp, zip_dest, move=move, verbose=False)
 
-            # if not in Google cloud, copy files one by one
-            filenames_png = glob.glob(search_str)
-
-            for png_tmp in filenames_png:
-                png_dest = '{}/{}'.format(dir_dest, png_tmp.split('/')[-1])
-                copy_file (png_tmp, png_dest, move=move, verbose=False)
-
+        # remove thumbnails and zip from tmp folder if not kept
+        if not get_par(set_bb.keep_tmp,tel):
+            shutil.rmtree(dir_tmp, ignore_errors=True)
 
     else:
         log.warning ('zero rows in {}; no thumbnails to save'
