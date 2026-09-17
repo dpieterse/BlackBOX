@@ -2749,11 +2749,8 @@ def save_png_thumbnails (fits_trans, zip_dest, tel=None, nthreads=1):
             else:
                 cp_cmd = 'cp'
 
-            # gsutil command (not actively supported anymore)
-            cmd = ['gsutil', '-m', '-q', cp_cmd, zip_tmp, zip_dest]
-            # gcloud storage alternative; best to use cp command
-            #cmd = ['gcloud', 'storage', 'cp', zip_tmp, zip_dest,
-            #       '--no-user-output-enabled']
+            cmd = ['gcloud', 'storage', cp_cmd, zip_tmp, zip_dest,
+                   '--no-user-output-enabled']
             result = subprocess.run(cmd)
 
         else:
@@ -7819,7 +7816,7 @@ def copy_flist (filelist, dest, move=False, verbose=True):
 
     else:
 
-        # this could be done in python, but much easier with gsutil
+        # this could be done in python, but much easier with gcloud storage
         # from the shell
         if move:
             cp_cmd = 'mv'
@@ -7832,8 +7829,8 @@ def copy_flist (filelist, dest, move=False, verbose=True):
         for i in range(3):
 
             try:
-                # gsutil command (not actively supported anymore)
-                cmd = ['gsutil', '-m', '-q', cp_cmd, '-I', dest]
+                cmd = ['gcloud', 'storage', cp_cmd, '--read-paths-from-stdin',
+                       dest, '--no-user-output-enabled']
                 result = subprocess.run(cmd, input='\n'.join(filelist)
                                         .encode('utf-8'))
             except:
@@ -7928,7 +7925,7 @@ def copy_file (src_file, dest, move=False, verbose=True):
 
     else:
 
-        # this could be done in python, but much easier with gsutil
+        # this could be done in python, but much easier with gcloud storage
         # from the shell
         if move:
             cp_cmd = 'mv'
@@ -7940,10 +7937,8 @@ def copy_file (src_file, dest, move=False, verbose=True):
         # couple of times if destination file is not created
         for i in range(3):
 
-            # gsutil command (not actively supported anymore)
-            cmd = ['gsutil', '-q', cp_cmd, src_file, dest]
-            # gcloud storage alternative
-            #cmd = ['gcloud', 'storage', cp_cmd, src_file, dest]
+            cmd = ['gcloud', 'storage', cp_cmd, src_file, dest,
+                   '--no-user-output-enabled']
             result = subprocess.run(cmd)
 
             if isfile(fn1) or isfile(fn2):

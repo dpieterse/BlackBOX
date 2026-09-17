@@ -1463,7 +1463,7 @@ def copy_file (src_file, dest, move=False, verbose=True):
 
     else:
 
-        # this could be done in python, but much easier with gsutil
+        # this could be done in python, but much easier with gcloud storage
         # from the shell
         if move:
             cp_cmd = 'mv'
@@ -1471,7 +1471,8 @@ def copy_file (src_file, dest, move=False, verbose=True):
             cp_cmd = 'cp'
 
 
-        cmd = ['gsutil', '-q', cp_cmd, src_file, dest]
+        cmd = ['gcloud', 'storage', cp_cmd, src_file, dest,
+               '--no-user-output-enabled']
         result = subprocess.run(cmd)
         #result = subprocess.run(cmd, capture_output=True)
         #log.info(result.stdout.decode('UTF-8'))
