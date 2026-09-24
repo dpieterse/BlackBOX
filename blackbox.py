@@ -4156,7 +4156,7 @@ def copy2cloud(src_base, copy_cat=True, copy_trans=True, copy_thumbnails=True):
             raise NameError(res.stderr)
 
     if get_par(set_zogy.timing,tel):
-        log_timing_memory (t0=t, label='in copy_cats2Google')
+        log_timing_memory (t0=t, label='in copy2cloud')
 
 
     return
