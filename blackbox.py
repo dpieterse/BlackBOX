@@ -120,7 +120,7 @@ except Exception as e:
                  'blackbox; issue with IERS file?: {}'.format(e))
 
 
-__version__ = '1.5.2'
+__version__ = '1.5.3'
 keywords_version = '1.2.2'
 
 
@@ -2016,7 +2016,7 @@ def blackbox_reduce (filename):
 
 
         # if header of object image contains a red flag, create dummy
-        # binary fits catalogs (both 'cat' and 'trans') and return,
+        # binary fits catalogs ('cat', 'trans' and 'sso') and return,
         # skipping zogy's [optimal subtraction] below
         if qc_flag=='red':
             log.error('red QC flag in image {}; making dummy catalogs and '
@@ -2037,6 +2037,10 @@ def blackbox_reduce (filename):
             list_2keep = get_par(set_bb.all_2keep,tel)
             copy_files2keep(tmp_base, new_base, list_2keep,
                             move=(not get_par(set_bb.keep_tmp,tel)))
+
+            # copy catalogs (cat/trans/sso) to the Google Cloud for MeerLICHT
+            if tel == 'ML1' and set_bb.proc_env == 'production':
+                copy2cloud(new_base, copy_thumbnails=False)
 
             # only for ML, create symbolic links in alternative
             # directory structure if transient catalog is involved;
@@ -2577,8 +2581,8 @@ def blackbox_reduce (filename):
     verify_header (fits_tmp_trans, ['raw','full','trans'])
 
 
-
     # if transient catalog exists
+    zip_exists = False
     if isfile(fits_tmp_trans):
 
         # run match2SSO to find known asteroids in the observation
@@ -2588,9 +2592,10 @@ def blackbox_reduce (filename):
         # create png thumbnails for database
         if get_par(set_bb.save_thumbnails_pngs,tel):
             #and qc_flag != 'red' and tqc_flag != 'red':
-            zip_dest = '{}/{}.zip'.format(thumbnails_path, tmp_base.split('/')[-1])
-            save_png_thumbnails (fits_tmp_trans, zip_dest, tel=tel,
-                                 nthreads=set_bb.nthreads)
+            zip_dest = '{}/{}.zip'.format(thumbnails_path,
+                                          tmp_base.split('/')[-1])
+            zip_exists = save_png_thumbnails (fits_tmp_trans, zip_dest,
+                                              nthreads=set_bb.nthreads)
 
 
         # if not keeping thumbnails as columns in transient catalog,
@@ -2615,7 +2620,7 @@ def blackbox_reduce (filename):
     elif qc_flag == 'red':
         # make sure to copy dummy source catalog in case of a red flag
         list_2keep += ['_cat_hdr.fits']
-        list_2keep += ['_cat.fits']
+        list_2keep += ['_red_cat.fits']
 
 
     # transient extraction products
@@ -2632,6 +2637,15 @@ def blackbox_reduce (filename):
     copy_files2keep(tmp_base, new_base, list_2keep,
                     move=(not get_par(set_bb.keep_tmp,tel)))
 
+    # copy catalogs (cat/trans/sso) to the Google Cloud for MeerLICHT
+    if tel == 'ML1' and set_bb.proc_env == 'production':
+        copy_cat, copy_trans = False, False
+        if '_red_cat.fits' in list_2keep:
+            copy_cat = True
+        if '_trans.fits' in list_2keep or '_trans_sso.fits' in list_2keep:
+            copy_trans = True
+        copy2cloud(new_base, copy_cat=copy_cat, copy_trans=copy_trans,
+                   copy_thumbnails=zip_exists)
 
     # if original filename contains ADC, save any *dRADEC* files from
     # tmp to /idia/projects/meerlicht/ADCtests/tel_yyyymmdd or
@@ -2674,7 +2688,7 @@ def blackbox_reduce (filename):
 
 ################################################################################
 
-def save_png_thumbnails (fits_trans, zip_dest, tel=None, nthreads=1):
+def save_png_thumbnails (fits_trans, zip_dest, nthreads=1):
 
     """function to convert thumbnails in transient catalog
     [fits_trans] to separate png files (to be used by the Database)
@@ -2688,6 +2702,12 @@ def save_png_thumbnails (fits_trans, zip_dest, tel=None, nthreads=1):
 
     if get_par(set_zogy.timing,tel):
         t = time.time()
+
+    # make sure the destination zip file doesn't exist yet
+    if isfile(zip_dest):
+        log.warning ('removing thumbnails bundle {}'.format(zip_dest))
+        remove_files([zip_dest])
+    zip_exists = False
 
     # to avoid reading potentially very large transient fits table in
     # one go, use fitsio to first read all rows but only for a
@@ -2726,11 +2746,6 @@ def save_png_thumbnails (fits_trans, zip_dest, tel=None, nthreads=1):
             for png_file in filenames_png:
                 zf.write(png_file, arcname=os.path.basename(png_file))
 
-        # make sure the destination zip file doesn't exist yet
-        if isfile(zip_dest):
-            log.warning ('removing thumbnails bundle {}'.format(zip_dest))
-            remove_files([zip_dest])
-
         # Create the destination folder if it doesn't exist yet and if it's not
         # a Google Cloud bucket.
         if zip_dest[0:5] != 'gs://':
@@ -2756,6 +2771,8 @@ def save_png_thumbnails (fits_trans, zip_dest, tel=None, nthreads=1):
         else:
             copy_file (zip_tmp, zip_dest, move=move, verbose=False)
 
+        zip_exists = True
+
         # remove thumbnails and zip from tmp folder if not kept
         if not get_par(set_bb.keep_tmp,tel):
             shutil.rmtree(dir_tmp, ignore_errors=True)
@@ -2767,6 +2784,9 @@ def save_png_thumbnails (fits_trans, zip_dest, tel=None, nthreads=1):
 
     if get_par(set_zogy.timing,tel):
         log_timing_memory (t0=t, label='in save_png_thumbnails')
+
+
+    return zip_exists
 
 
 ################################################################################
@@ -2819,7 +2839,7 @@ def scale_data (data, vmin, vmax):
 def create_symlinks (new_base, obj, filt):
 
     # extensions for which to create symbolic links
-    symlink_exts = ['_cat.fits', '_cat_hdr.fits', '_trans.fits',
+    symlink_exts = ['_red_cat.fits', '_cat_hdr.fits', '_trans.fits',
                     '_trans_hdr.fits', '_trans_light.fits']
 
     src_files = ['{}_red{}'.format(new_base, ext) for ext in symlink_exts]
@@ -3511,11 +3531,11 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     body += ('# full-source cats: {} ({} red-flagged)\n'.format(
         len(cat_list), count_redflags(cat_list)))
 
-    trans_list = [c for c in all_cats_list if c.endswith('_red_trans.fits')]
+    trans_list = [c for c in all_cats_list if c.endswith('_trans.fits')]
     body += ('# transient cats:   {} ({} red-flagged)\n'.format(
         len(trans_list), count_redflags(trans_list, key='TQC-FLAG')))
 
-    sso_list = [c for c in all_cats_list if c.endswith('_red_trans_sso.fits')]
+    sso_list = [c for c in all_cats_list if c.endswith('_trans_sso.fits')]
     body += ('# SSO cats:         {} ({} empty)\n'.format(
         len(sso_list), count_redflags(sso_list, key='SDUMCAT')))
     body += '\n'
@@ -4068,6 +4088,75 @@ def copy_files2keep (src_base, dest_base, ext2keep, move=True, run_fpack=True):
                         else:
                             copy_file (src_file, dest_file, move=move)
 
+
+
+    return
+
+
+################################################################################
+
+def copy2cloud(src_base, copy_cat=True, copy_trans=True, copy_thumbnails=True):
+
+    """
+    Copy the MeerLICHT cat and/or trans & sso catalogs with base name [src_base]
+    over to the Google Cloud if they were produced in a production environment
+    (not testing or staging). If a thumbnail zip directory exists, also copy
+    that over. The copying will be done with rclone, which needs to already be
+    configured. If this is not the case, do so with 'module load rclone' and
+    'rclone config'. Define the config name in the BlackBOX settings file.
+    """
+    if get_par(set_zogy.timing,tel):
+        t = time.time()
+
+    # Double-check the telescope and processing environment
+    if tel != 'ML1' or set_bb.proc_env != 'production':
+        return
+
+    # Check if rclone configuration exists
+    config = set_bb.rclone_configname
+    res = subprocess.run(['rclone', 'config', 'show', config],
+        capture_output=True, text=True)
+    if res.returncode != 0:
+        raise ValueError('rclone configuration does not exist - set it up!')
+
+    # Retrieve catalog names
+    red_dir = set_bb.red_dir[tel]
+    src_files = list_files(src_base)
+    ext2copy = []
+    if copy_cat:
+        ext2copy.append('_red_cat.fits')
+    if copy_trans:
+        ext2copy.extend(['_trans.fits', '_trans_sso.fits'])
+    catalogs = [f for ext in ext2copy for f in src_files if ext in f]
+
+    for catalog in catalogs:
+        dest = catalog.replace(red_dir, set_bb.red_dir['BG'].replace(
+            'BG', tel)).replace('gs://', '{}:'.format(config))
+
+        # Copy the catalog over to the Google Cloud
+        log.info('Copying {} to {}'.format(catalog, dest))
+        cmd = ['rclone', 'copyto', '-L', catalog, dest]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            log.critical(res.stderr)
+            raise NameError(res.stderr)
+
+    if copy_thumbnails:
+        thumbnails_dir = set_bb.thumbnails_dir[tel]
+        zipname = '{}.zip'.format(src_base.replace(red_dir, thumbnails_dir))
+        dest = zipname.replace(thumbnails_dir, set_bb.thumbnails_dir['BG'
+            ].replace('BG', tel)).replace('gs://','{}:'.format(config))
+
+        # Copy the thumbnails zip over to the Google Cloud
+        log.info('Copying {} to {}'.format(zipname, dest))
+        cmd = ['rclone', 'copyto', '-L', zipname, dest]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            log.critical(res.stderr)
+            raise NameError(res.stderr)
+
+    if get_par(set_zogy.timing,tel):
+        log_timing_memory (t0=t, label='in copy_cats2Google')
 
 
     return

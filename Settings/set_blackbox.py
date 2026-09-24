@@ -120,6 +120,11 @@ for tel in ['ML1']:
     master_dir[tel] = '{}{}/masters/{}'.format(run_dir_base[tel],
                                                proc_env_subdir, tel)
 
+# To copy the ML1 catalogs (full-source, trans and sso) and thumbnails to
+# BlackGEM's Google Cloud, we use rclone. This is only done in the production
+# proc_env (see above). Set up an rclone configuration with "module load rclone"
+# followed by "rclone config" and specify the name here:
+rclone_configname = "2GoogleCloud"
 
 
 # BlackGEM buckets at Google cloud
