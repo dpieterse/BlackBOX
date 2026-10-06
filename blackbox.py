@@ -2688,7 +2688,7 @@ def blackbox_reduce (filename):
 
 ################################################################################
 
-def save_png_thumbnails (fits_trans, zip_dest, nthreads=1):
+def save_png_thumbnails (fits_trans, zip_dest, nthreads=1, test=True):
 
     """function to convert thumbnails in transient catalog
     [fits_trans] to separate png files (to be used by the Database)
@@ -2696,7 +2696,8 @@ def save_png_thumbnails (fits_trans, zip_dest, nthreads=1):
     [number]_SCORR.png, where number is the row number - also
     indicated by the NUMBER column - in [fits_trans]. The pngs are
     bundled together into an uncompressed zip file, which is copied/
-    moved to [zip_dest]."""
+    moved to [zip_dest].
+    The individual thumbnails are also kept in the test phase"""
 
     log.info ('running save_png_thumbnails')
 
@@ -2746,6 +2747,16 @@ def save_png_thumbnails (fits_trans, zip_dest, nthreads=1):
             for png_file in filenames_png:
                 zf.write(png_file, arcname=os.path.basename(png_file))
 
+        # Make sure the destination folder of the individual thumbnails is empty
+        dir_dest = zip_dest.replace(".zip", "")
+        if test and isdir(dir_dest):
+            log.warning ('removing all existing thumbnails in {}'.format(dir_dest))
+            if dir_dest[0:5] == 'gs://':
+                cmd = ['gsutil', '-m', '-q', 'rm', '{}/*'.format(dir_dest)]
+                result = subprocess.run(cmd)
+            else:
+                make_dir (dir_dest, empty=True)
+
         # Create the destination folder if it doesn't exist yet and if it's not
         # a Google Cloud bucket.
         if zip_dest[0:5] != 'gs://':
@@ -2768,8 +2779,19 @@ def save_png_thumbnails (fits_trans, zip_dest, nthreads=1):
                    '--no-user-output-enabled']
             result = subprocess.run(cmd)
 
+            if test:
+                # Copy over the individual thumbnails too
+                cmd = ['gcloud', 'storage', cp_cmd, search_str, dir_dest,
+                       '--recursive', '--no-user-output-enabled']
+                result = subprocess.run(cmd)
+
         else:
             copy_file (zip_tmp, zip_dest, move=move, verbose=False)
+
+            if test:
+                for png_tmp in filenames_png:
+                    png_dest = '{}/{}'.format(dir_dest, png_tmp.split('/')[-1])
+                    copy_file (png_tmp, png_dest, move=move, verbose=False)
 
         zip_exists = True
 
