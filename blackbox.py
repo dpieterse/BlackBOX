@@ -2781,8 +2781,8 @@ def save_png_thumbnails (fits_trans, zip_dest, nthreads=1, test=True):
 
             if test:
                 # Copy over the individual thumbnails too
-                cmd = ['gcloud', 'storage', cp_cmd, search_str, dir_dest,
-                       '--recursive', '--no-user-output-enabled']
+                cmd = ['gcloud', 'storage', cp_cmd, search_str, dir_dest+'/',
+                       '--no-user-output-enabled']
                 result = subprocess.run(cmd)
 
         else:
