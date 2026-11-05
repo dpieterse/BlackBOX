@@ -646,7 +646,7 @@ def slurm_process (python_cmdstr, partition, runtime, jobname, jobnight):
             f.write ('echo "#task allocated   = $SLURM_NTASKS"\n')
             f.write ('echo "#cores/task       = $SLURM_CPUS_PER_TASK"\n')
             f.write ('\n')
-            f.write ('/opt/apps/singularity/3.11.0/bin/singularity exec '
+            f.write ('/opt/apps/singularity/4.6.0/bin/singularity exec '
                      #'--env PYTHONPATH="/home/sa_105685508700717199458/BBtest:\$PYTHONPATH" '
                      '--env MLBG_CALDIR={} {}/Containers/MLBG_latest.sif {}\n'
                      .format(cal_dir, home_dir, python_cmdstr))
