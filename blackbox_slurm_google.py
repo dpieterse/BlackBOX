@@ -56,7 +56,7 @@ for handler in log.handlers:       # the stream handler made by basicConfig
     handler.addFilter(drop_noisy)
 
 
-__version__ = '0.8.0'
+__version__ = '0.9.0'
 
 
 ################################################################################
@@ -131,7 +131,9 @@ def adjust_horizon (observer, height):
 ################################################################################
 
 def run_blackbox_slurm (date=None, telescope=None, mode='night',
-                        runtime='6:00:00'):
+                        runtime='6:00:00', force_reproc_new=False,
+                        make_masters=True, reduce_science_data=True,
+                        update_hdrtables=True, create_nightreports=True):
 
     # create general logfile based on date/time
     genlogfile = '{}/BG_{}.log'.format(log_dir,
@@ -165,6 +167,19 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
 
     global proc_mode
     proc_mode = mode
+
+
+    # in night mode, all steps are done, in the order: reduce incoming
+    # images, make masters, update header tables, create night report
+    if mode == 'night':
+        make_masters = True
+        reduce_science_data = True
+        update_hdrtables = True
+        create_nightreports = True
+    log.info ('mode: {}, make_masters: {}, reduce_science_data: {}, '
+              'update_hdrtables: {}, create_nightreports: {}'
+              .format(mode, make_masters, reduce_science_data,
+                      update_hdrtables, create_nightreports))
 
 
     # read field ID table including number of expected Gaia sources
@@ -202,8 +217,6 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
             jobnight[tel] = '{}/{}/{}'.format(job_dir, tel, date_dir)
             os.makedirs (jobnight[tel], exist_ok=True)
 
-
-
     # filenames contains one list for each telescope; flatten these lists
     filenames = list(itertools.chain.from_iterable(filenames))
 
@@ -225,13 +238,23 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
     # create queue for submitting jobs
     q = queue.Queue()
 
-
-    # add files that are already present in the read_path
-    # directory to the night queue, to reduce these first
+    # add files that are already present in the read_path directory to
+    # the queue; in night mode all files are added; in day mode only
+    # the calibration frames (bias, dark, flat) are added here, and
+    # only if the masters are to be made; the science frames are kept
+    # aside until the masters have been made
+    files_science = []
     for filename in filenames:
-        if 'fits' in filename:
-            q.put(filename)
+        if 'fits' not in filename:
+            continue
 
+        if mode == 'night':
+            q.put(filename)
+        elif is_calib_file(filename):
+            if make_masters:
+                q.put(filename)
+        else:
+            files_science.append(filename)
 
 
     # callback function for Pub/Sub subscriber defined below
@@ -254,7 +277,6 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
             q.put(filename)
 
 
-
     if mode == 'night':
 
         # in night mode, set up Pub/Sub subscriber to monitor new
@@ -268,270 +290,302 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
         log.info ('project_id: {}'.format(project_id))
         log.info ('subscription_path: {}'.format(subscription_path))
 
-
         # start streaming pull, listening for messages
         streaming_pull_future = subscriber.subscribe(subscription_path,
                                                      callback=callback)
         log.info ('listening for messages on {}'.format(subscription_path))
 
 
+    def process_queue():
 
+        """submit a Slurm job for every file in the queue; in night mode
+           this keeps monitoring the queue until the night has finished
+           and all jobs are done; in day mode it returns once the
+           queue is empty. Returns the list of names of the jobs
+           submitted.
 
-    # keep monitoring queue - which is being filled with new files
-    # detected by subscriber - as long as it is nighttime or the queue
-    # is not empty yet
-    jobnames = []
-    #while (ephem.now()-sunrise < 0*ephem.minute or not q.empty() or
-    while (ephem.now()-sunrise < 15*ephem.minute or not q.empty() or
-           # in night mode, also wait until all jobs are finished, to
-           # keep the queue open for potential new files; the file
-           # transfer into google cloud will be sluggish with 3
-           # telescopes operating, so not clear when the last file of
-           # the night will actually be arriving
-           (mode=='night' and len(list_active_jobs(jobnames)) > 0)):
+        """
+        
+        # keep monitoring queue - which is being filled with new files
+        # detected by subscriber - as long as it is nighttime or the queue
+        # is not empty yet
+        jobnames_q = []
+        #while (ephem.now()-sunrise < 0*ephem.minute or not q.empty() or
+        while (ephem.now()-sunrise < 15*ephem.minute or not q.empty() or
+               # in night mode, also wait until all jobs are finished, to
+               # keep the queue open for potential new files; the file
+               # transfer into google cloud will be sluggish with 3
+               # telescopes operating, so not clear when the last file of
+               # the night will actually be arriving
+               (mode=='night' and len(list_active_jobs(jobnames_q)) > 0)):
 
-        if q.empty():
-
-            if mode == 'night':
-                time.sleep(10)
-            else:
-                # in day mode, no additional files should be coming
-                # in, so can break out of while loop
-                break
-
-        else:
-
-            filename = q.get()
-
-            log.info ('filename: {}'.format(filename))
-
-            process = False
-            if filename:
-
-                # infer telescope from first letters of filename
-                tel = filename.split('/')[-1][0:3]
-
-                # only process if tel in tels_running and it is
-                # consistent with input telescope (which could be
-                # 'BG')
-                if tel in tels_running and telescope in tel:
-                    process = True
-
-
-            if process:
-
-                # Python command to execute
-                python_cmdstr = (
-                    'python /Software/BlackBOX/blackbox.py --telescope {} '
-                    '--img_reduce True --cat_extract True --trans_extract True '
-                    '--force_reproc_new False --image {}'
-                    .format(tel, filename))
-
-                log.info ('python command string to execute: {}'
-                          .format(python_cmdstr))
-
-
-                # use different partitions for bias, flats and object images
-                if 'bias' in filename.lower() or 'dark' in filename.lower():
-                    #partition = 'p1gb4t'
-                    #partition = 'p1gb8'
-                    partition = 'p2gb16'
-
-                elif 'flat' in filename.lower():
-                    #partition = 'p2gb8t'
-                    #partition = 'p1gb8'
-                    partition = 'p2gb16'
-
+            if q.empty():
+                if mode == 'night':
+                    time.sleep(10)
                 else:
-                    # for object images, use different partitions for
-                    # fields with low and high number of expected gaia
-                    # sources; default partition:
-                    #partition = 'p2gb16'
-                    partition = 'p4gb16t'
+                    # in day mode, no additional files should be coming
+                    # in, so can break out of while loop
+                    break
+            else:
+                filename = q.get()
+                log.info ('filename: {}'.format(filename))
+
+                process = False
+                if filename:
+                    # infer telescope from first letters of filename
+                    tel = filename.split('/')[-1][0:3]
+
+                    # only process if tel in tels_running and it is
+                    # consistent with input telescope (which could be
+                    # 'BG')
+                    if tel in tels_running and telescope in tel:
+                        process = True
 
 
-                    # if field contains many Gaia sources, use
-                    # different partition
-                    try:
-                        # extract field ID from header
-                        header = read_hdulist(filename, get_data=False,
-                                              get_header=True)
+                if process:
+                    # Python command to execute
+                    python_cmdstr = (
+                        'python /Software/BlackBOX/blackbox.py --telescope {} '
+                        '--img_reduce True --cat_extract True --trans_extract '
+                        'True --force_reproc_new {} --image {}'
+                        .format(tel, force_reproc_new, filename))
 
-                        if 'OBJECT' in header:
-                            field_id = int(header['OBJECT'])
-                            ngaia = ngaia_dict[field_id]
-
-                            # set partition depending on ngaia
-                            if ngaia > 2e5:
-                                #partition = 'p4gb32'
-                                partition = 'p8gb32t'
-
-                            if ngaia > 2e6:
-                                #partition = 'p8gb64'
-                                partition = 'p16gb64t'
+                    log.info ('python command string to execute: {}'
+                              .format(python_cmdstr))
 
 
-                            log.info ('estimated # Gaia sources in field ({}): '
-                                      '{}; using partition {} for {}'
-                                      .format(field_id, ngaia, partition,
-                                              filename))
+                    # use different partitions for bias, flats and object images
+                    if 'bias' in filename.lower() or 'dark' in filename.lower():
+                        #partition = 'p1gb4t'
+                        #partition = 'p1gb8'
+                        partition = 'p2gb16'
 
-                    except Exception as e:
-                        log.warning ('exception occurred when inferring ngaia '
-                                     'for {}; using default partition ({}): {}'
-                                     .format(filename, partition, e))
+                    elif 'flat' in filename.lower():
+                        #partition = 'p1gb8'
+                        partition = 'p2gb16'
+
+                    else:
+                        # for object images, use different partitions for
+                        # fields with low and high number of expected gaia
+                        # sources; default partition:
+                        partition = 'p4gb16t'
+
+                        # if field contains many Gaia sources, use
+                        # different partition
+                        try:
+                            # extract field ID from header
+                            header = read_hdulist(filename, get_data=False,
+                                                  get_header=True)
+
+                            if 'OBJECT' in header:
+                                field_id = int(header['OBJECT'])
+                                ngaia = ngaia_dict[field_id]
+
+                                # set partition depending on ngaia
+                                if ngaia > 2e5:
+                                    #partition = 'p4gb32'
+                                    partition = 'p8gb32t'
+
+                                if ngaia > 2e6:
+                                    #partition = 'p8gb64'
+                                    partition = 'p16gb64t'
+
+                                log.info ('estimated # Gaia sources in field '
+                                          '({}): {}; using partition {} for {}'
+                                          .format(field_id, ngaia, partition,
+                                                  filename))
+
+                        except Exception as e:
+                            log.warning ('exception occurred when inferring '
+                                         'ngaia for {}; using default partition'
+                                         ' ({}): {}'
+                                         .format(filename, partition, e))
 
 
 
-                # process it through a SLURM batch job
-                jobname = filename.split('/')[-1].split('.fits')[0]
-                slurm_process (python_cmdstr, partition, runtime, jobname,
-                               jobnight[tel])
+                    # process it through a SLURM batch job
+                    jobname = filename.split('/')[-1].split('.fits')[0]
+                    slurm_process (python_cmdstr, partition, runtime, jobname,
+                                   jobnight[tel])
+
+                    # append filename to list of files processed
+                    jobnames_q.append(jobname)
+
+                    # sleep for a bit to avoid submitting jobs at the same time
+                    time.sleep(1)
+
+        return jobnames_q
 
 
-                # append filename to list of files processed
-                jobnames.append(jobname)
+    # maximum wait time equal to twice the input [runtime]
+    wait_max = 2 * np.sum(np.array(runtime.split(':')).astype(int)
+                          *np.array([3600, 60, 1]))
+
+    def wait_for (jobnames_wait, label):
+        if len(jobnames_wait) == 0:
+            return
+        log.info ('waiting for {} {} job(s) to finish'
+                  .format(len(jobnames_wait), label))
+        nsec_wait = wait4jobs2finish (jobnames_wait, wait_max=wait_max)
+        log.info ('waited for {:.2f} hours for the {} jobs to finish'
+                  .format(nsec_wait/3600, label))
 
 
-                # sleep for a bit to avoid submitting jobs at the same
-                # time
-                time.sleep(1)
-
-
-
-
-
-    log.info ('night has finished and queue is empty')
-
-
-    # subscriber can be stopped
+    ############################################################
+    # step 1: night mode: reduce all images, including the ones that
+    # arrive during the night; day mode: reduce calibration frames
+    ############################################################
+    jobnames = process_queue()
+    
     if mode == 'night':
+        log.info ('night has finished and queue is empty')
+        # subscriber can be stopped
         streaming_pull_future.cancel()  # Trigger the shutdown.
         streaming_pull_future.result()  # Block until the shutdown is complete.
 
-
-    # now waiting until no more running jobs left setting maximum wait
-    # time equal to twice the input [runtime]
-    log.info ('checking if there are any running/pending jobs left')
-    wait_max = 2 * np.sum(np.array(runtime.split(':')).astype(int)
-                          *np.array([3600, 60, 1]))
-    nsec_wait = wait4jobs2finish (jobnames, wait_max=wait_max)
-    log.info ('waited for {:.2f} hours for all individual jobs to finish'
-              .format(nsec_wait/3600))
+    wait_for (jobnames, 'image reduction')
+    
+    log.info ('night has finished and queue is empty')
 
 
+    ############################################################
+    # step 2: create master frames
+    ############################################################
+    if make_masters:
 
-    # create master frames
-    jobname_masters = {}
-    for tel in tels_running:
-        if telescope in tel:
-            python_cmdstr_master = ('python /Software/BlackBOX/blackbox.py '
-                                    '--telescope {} --master_date {}'
-                                    .format(tel, date_eve))
-            # process masters through a SLURM batch job; could split
-            # this up into several jobs, one for the master bias and
-            # one for each of the master flats in a specific filter,
-            # but even with a single task this takes only about 10-15
-            # minutes
-            jobname_masters[tel] = '{}_masters_{}'.format(tel, date_eve)
+        # create master frames
+        jobname_masters = {}
+        jobnames_masters = []
+        for tel in tels_running:
+            if telescope in tel:
+                python_cmdstr_master = ('python /Software/BlackBOX/blackbox.py '
+                                        '--telescope {} --master_date {}'
+                                        .format(tel, date_eve))
+                # process masters through a SLURM batch job; could split
+                # this up into several jobs, one for the master bias and
+                # one for each of the master flats in a specific filter,
+                # but even with a single task this takes only about 10-15
+                # minutes
+                jobname_masters[tel] = '{}_masters_{}'.format(tel, date_eve)
 
-            partition = 'p2gb32'
-            slurm_process (python_cmdstr_master, partition, runtime='1:00:00',
-                           jobname=jobname_masters[tel], jobnight=jobnight[tel])
-            jobnames.append(jobname_masters[tel])
+                partition = 'p2gb32'
+                slurm_process (python_cmdstr_master, partition, runtime='1:00:00',
+                               jobname=jobname_masters[tel], jobnight=jobnight[tel])
+                jobnames.append(jobname_masters[tel])
+                jobnames_masters.append(jobname_masters[tel])
+
+        # in day mode, science frames are only reduced after the
+        # masters have been made
+        if mode == 'day' and reduce_science_data:
+            wait_for (jobnames_masters, 'master frame')
 
 
+    ############################################################
+    # step 3 (day mode only): reduce the science frames
+    ############################################################
+    if mode == 'day' and reduce_science_data:
+
+        log.info ('reducing {} science frames'.format(len(files_science)))
+        for filename in files_science:
+            q.put(filename)
+
+        jobnames_science = process_queue()
+        jobnames += jobnames_science
+
+        # header tables and night reports need the reduced science frames
+        wait_for (jobnames_science, 'science reduction')
 
 
-    # add number of header keywords of newly reduced images to header
-    # fits tables; function [add_headkeys] is taking care of writing a
-    # temporary updated table before moving it to the bucket
-    for tel in tels_running:
-        if telescope in tel:
+    ############################################################
+    # step 4: add number of header keywords of newly reduced images to
+    # header fits tables
+    ############################################################
+    if update_hdrtables:
 
-            try:
+        # add number of header keywords of newly reduced images to header
+        # fits tables; function [add_headkeys] is taking care of writing a
+        # temporary updated table before moving it to the bucket
+        for tel in tels_running:
+            if telescope in tel:
 
-                # loop different catalogs
-                for cat_type in ['cat', 'trans', 'sso', 'bias', 'flat']:
+                try:
 
-                    # add night's headers to header file
-                    fits_header = ('gs://blackgem-hdrtables/{}/{}_headers_{}.fits'
-                                   .format(tel, tel, cat_type))
-                    path_full = '{}/{}'.format(red_dir[tel], date_dir)
+                    # loop different catalogs
+                    for cat_type in ['cat', 'trans', 'sso', 'bias', 'flat']:
 
-                    if cat_type in ['bias', 'flat']:
-                        search_str = '/{}/{}_20'.format(cat_type, tel)
-                        end_str = '.fits.fz'
-                    elif cat_type == 'cat':
-                        search_str = '_red_{}.fits'.format(cat_type)
-                        end_str = ''
+                        # add night's headers to header file
+                        fits_header = ('gs://blackgem-hdrtables/{}/{}_headers_{}.fits'
+                                       .format(tel, tel, cat_type))
+                        path_full = '{}/{}'.format(red_dir[tel], date_dir)
+
+                        if cat_type in ['bias', 'flat']:
+                            search_str = '/{}/{}_20'.format(cat_type, tel)
+                            end_str = '.fits.fz'
+                        elif cat_type == 'cat':
+                            search_str = '_red_{}.fits'.format(cat_type)
+                            end_str = ''
+                        else:
+                            search_str = '_{}.fits'.format(cat_type)
+                            end_str = ''
+
+                        python_cmdstr = ('python -c \"import set_blackbox as set_bb;'
+                                         ' from blackbox import add_headkeys; '
+                                         'add_headkeys (\'{}\', \'{}\', \'{}\', '
+                                         '\'{}\', \'{}\')\"'
+                                         .format(path_full, fits_header, search_str,
+                                                 end_str, tel))
+
+                        jobname = '{}_add_headkeys_{}_{}'.format(tel, cat_type,
+                                                                 date_eve)
+                        partition = 'p1gb8'
+                        slurm_process (python_cmdstr, partition, runtime='0:30:00',
+                                       jobname=jobname, jobnight=jobnight[tel])
+                        jobnames.append(jobname)
+
+                except Exception as e:
+                    log.exception('exception occurred while adding {} header keys '
+                                  'for {}: {}'.format(cat_type, tel, e))
+
+
+    ############################################################
+    # step 5: create night reports
+    ############################################################
+    if create_nightreports:
+
+        # for La Silla, can always make a screenshot of a particular
+        # night (as opposed to Sutherland), so switch it on
+        screenshot = True
+
+        for tel in tels_running:
+            if telescope in tel:
+
+                try:
+
+                    if False:
+
+                        # execute create_obslog on a compute node
+                        python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
+                                         'from blackbox import create_obslog; '
+                                         'create_obslog (\'{}\', email=True, '
+                                         'tel=\'{}\', weather_screenshot={})\"'
+                                         .format(date, tel, screenshot))
+
+                        jobname = '{}_obslog_{}'.format(tel, date_eve)
+                        partition = 'p1gb8'
+                        slurm_process (python_cmdstr, partition, runtime='00:15:00',
+                                       jobname=jobname, jobnight=jobnight[tel])
+                        jobnames.append(jobname)
+
                     else:
-                        search_str = '_{}.fits'.format(cat_type)
-                        end_str = ''
+                        # currently compute nodes cannot send emails, so
+                        # execute create_obslog on the login node directly
+                        # using adapted version of [create_obslog]
+                        create_obslog (date, email=True, tel=tel,
+                                       weather_screenshot=screenshot)
 
-
-
-                    # cmd
-                    python_cmdstr = ('python -c \"import set_blackbox as set_bb;'
-                                     ' from blackbox import add_headkeys; '
-                                     'add_headkeys (\'{}\', \'{}\', \'{}\', '
-                                     '\'{}\', \'{}\')\"'
-                                     .format(path_full, fits_header, search_str,
-                                             end_str, tel))
-
-                    jobname = '{}_add_headkeys_{}_{}'.format(tel, cat_type,
-                                                             date_eve)
-                    partition = 'p1gb8'
-                    slurm_process (python_cmdstr, partition, runtime='0:30:00',
-                                   jobname=jobname, jobnight=jobnight[tel])
-                    jobnames.append(jobname)
-
-
-            except Exception as e:
-                log.exception('exception occurred while adding {} header keys '
-                              'for {}: {}'.format(cat_type, tel, e))
-
-
-
-
-    # for La Silla, can always make a screenshot of a particular
-    # night (as opposed to Sutherland), so switch it on
-    screenshot = True
-
-    for tel in tels_running:
-        if telescope in tel:
-
-            try:
-
-                if False:
-
-                    # execute create_obslog on a compute node
-                    python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
-                                     'from blackbox import create_obslog; '
-                                     'create_obslog (\'{}\', email=True, '
-                                     'tel=\'{}\', weather_screenshot={})\"'
-                                     .format(date, tel, screenshot))
-
-                    jobname = '{}_obslog_{}'.format(tel, date_eve)
-                    partition = 'p1gb8'
-                    slurm_process (python_cmdstr, partition, runtime='00:15:00',
-                                   jobname=jobname, jobnight=jobnight[tel])
-                    jobnames.append(jobname)
-
-                else:
-
-                    # currently compute nodes cannot send emails, so
-                    # execute create_obslog on the login node directly
-                    # using adapted version of [create_obslog]
-                    create_obslog (date, email=True, tel=tel,
-                                   weather_screenshot=screenshot)
-
-
-            except Exception as e:
-                log.exception('exception occurred while creating {} obslog '
-                              'for date {}: {}'.format(tel, date, e))
-
-
+                except Exception as e:
+                    log.exception('exception occurred while creating {} obslog '
+                                  'for date {}: {}'.format(tel, date, e))
 
 
     # now that night has finished, collect individual logfiles
@@ -556,6 +610,15 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
     log.info ('all done')
 
     return
+
+
+################################################################################
+
+def is_calib_file (filename):
+
+    """True if [filename] is a bias, dark or flat frame"""
+
+    return any(s in filename.lower() for s in ['bias', 'dark', 'flat'])
 
 
 ################################################################################
@@ -1733,13 +1796,37 @@ def main ():
     parser.add_argument('--telescope', type=str, default='BG', help='telescope')
     parser.add_argument('--mode', choices=['day', 'night'], default='night',
                         help='processing mode; night mode will also process new '
-                        'incoming images')
+                        'incoming images; default=night')
     parser.add_argument('--runtime', type=str, default='6:00:00',
                         help='runtime requested per image; default=6:00:00')
+    parser.add_argument('--force_reproc_new', type=str2bool, default=False,
+                        help='force reprocessing (overwriting) of image; '
+                        'default=False')
+
+    # Day-mode switches (in night mode, all steps are executed)
+    parser.add_argument('--make_masters', type=str2bool, default=True,
+                        help='reduce biases/flats and make masters before ; '
+                        'reducing science data. Only relevant in day mode; '
+                        'default=True. In night mode, biases/flats are reduced'
+                        'alongside science images and masters are only made '
+                        'after processing all images.')
+    parser.add_argument('--reduce_science_data', type=str2bool, default=True,
+                        help='reduce science images; default=True. Always True'
+                        ' in night mode.')
+    parser.add_argument('--update_hdrtables', type=str2bool, default=True,
+                        help='Update header tables; default=True. Always True '
+                        'in night mode.')
+    parser.add_argument('--create_nightreports', type=str2bool, default=True,
+                        help='Create night reports; default=True. Always True '
+                        'in night mode.')
     args = parser.parse_args()
 
 
-    run_blackbox_slurm (args.date, args.telescope, args.mode, args.runtime)
+    run_blackbox_slurm (args.date, args.telescope, args.mode, args.runtime,
+                        args.force_reproc_new, make_masters=args.make_masters,
+                        reduce_science_data=args.reduce_science_data,
+                        update_hdrtables=args.update_hdrtables,
+                        create_nightreports=args.create_nightreports)
 
 
 ################################################################################

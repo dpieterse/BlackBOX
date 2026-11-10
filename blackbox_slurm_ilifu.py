@@ -52,7 +52,7 @@ for handler in log.handlers:       # the stream handler made by basicConfig
     handler.addFilter(drop_noisy)
 
 
-__version__ = '0.8.0'
+__version__ = '0.9.0'
 
 
 ################################################################################
@@ -120,7 +120,10 @@ def adjust_horizon (observer, height):
 
 ################################################################################
 
-def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
+def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
+                        force_reproc_new=False, make_masters=True,
+                        reduce_science_data=True, update_hdrtables=True,
+                        create_nightreports=True):
 
     # create general logfile based on date/time
     genlogfile = '{}/{}_{}.log'.format(log_dir, tel,
@@ -131,16 +134,6 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
     fileHandler.addFilter(drop_noisy)
     log.addHandler(fileHandler)
     log.info ('general logfile created: {}'.format(genlogfile))
-
-
-    # read field ID table including number of expected Gaia sources
-    table_grid = Table.read(mlbg_fieldIDs, memmap=True)
-
-    # create ngaia dictionary with keys int(field_id) and
-    # ngaia as values
-    ngaia_dict = {}
-    for i, field_id in enumerate(table_grid['field_id']):
-        ngaia_dict[field_id] = table_grid['ngaia'][i]
 
 
     # if date is not specified, set it to the date of the last local
@@ -165,6 +158,30 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
     global proc_mode
     proc_mode = mode
 
+
+    # in night mode, all steps are done, in the order: reduce incoming
+    # images, make masters, update header tables, create night report
+    if mode == 'night':
+        make_masters = True
+        reduce_science_data = True
+        update_hdrtables = True
+        create_nightreports = True
+    log.info ('mode: {}, make_masters: {}, reduce_science_data: {}, '
+              'update_hdrtables: {}, create_nightreports: {}'
+              .format(mode, make_masters, reduce_science_data,
+                      update_hdrtables, create_nightreports))
+
+
+    # read field ID table including number of expected Gaia sources
+    table_grid = Table.read(mlbg_fieldIDs, memmap=True)
+
+    # create ngaia dictionary with keys int(field_id) and
+    # ngaia as values
+    ngaia_dict = {}
+    for i, field_id in enumerate(table_grid['field_id']):
+        ngaia_dict[field_id] = table_grid['ngaia'][i]
+
+
     # create list of all fits files already present in [read_path]
     read_path, date_eve = get_path(date, 'read')
     # make sure read_path exists (e.g. if no bias frames were taken,
@@ -172,11 +189,9 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
     os.makedirs(read_path, exist_ok=True)
     filenames = sorted(glob.glob('{}/{}'.format(read_path, '*fits*')))
 
-
     log.info('Slurm-processing in {} mode for evening date: {}'
              .format(mode, date_eve))
     log.info('{} files already present in {}'.format(len(filenames), read_path))
-
 
     # prepare folder in which to save and run jobs and logs
     date_dir = '{}/{}/{}'.format(date_eve[0:4], date_eve[4:6], date_eve[6:8])
@@ -210,226 +225,297 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
     # create queue for submitting jobs
     queue = mp.Queue()
 
-
-    # add files that are already present in the read_path
-    # directory to the night queue, to reduce these first
+    # add files that are already present in the read_path directory to
+    # the queue; in night mode all files are added; in day mode only
+    # the calibration frames (bias, dark, flat) are added here, and
+    # only if the masters are to be made; the science frames are kept
+    # aside until the masters have been made
+    files_science = []
     for filename in filenames:
-        queue.put(filename)
+        if 'fits' not in filename:
+            continue
+
+        if mode == 'night':
+            q.put(filename)
+        elif is_calib_file(filename):
+            if make_masters:
+                q.put(filename)
+        else:
+            files_science.append(filename)
 
 
     # create and setup observer, but do not start just yet
     observer = PollingObserver()
     observer.schedule(FileWatcher(queue), read_path, recursive=False)
 
-
     # start monitoring [read_path] for incoming files
     observer.start()
 
 
-    # keep monitoring queue - which is being filled with new files
-    # detected by watchdog - as long as it is nighttime or the
-    # queue is not empty yet
-    jobnames = []
-    #while (ephem.now()-sunrise < 10*ephem.minute or not queue.empty() or
-    while (ephem.now()-sunrise < 15*ephem.minute or not queue.empty() or
-           # in night mode, also wait until all jobs are finished
-           (mode=='night' and len(list_active_jobs(jobnames)) > 0)):
+    def process_queue():
 
-        if queue.empty():
-            if mode == 'night':
-                time.sleep(10)
-            else:
-                # in day mode, no additional files should be coming
-                # in, so can break out of while loop
-                break
+        """submit a Slurm job for every file in the queue; in night mode
+           this keeps monitoring the queue until the night has finished
+           and all jobs are done; in day mode it returns once the
+           queue is empty. Returns the list of names of the jobs
+           submitted.
 
-        else:
-            filename = get_file (queue)
-            if filename is not None:
+        """
 
-                # Python command to execute
-                python_cmdstr = (
-                    'python /Software/BlackBOX/blackbox.py --img_reduce True '
-                    '--cat_extract True --trans_extract True --keep_tmp False '
-                    '--force_reproc_new True --image {}'.format(filename))
+        # keep monitoring queue - which is being filled with new files
+        # detected by watchdog - as long as it is nighttime or the
+        # queue is not empty yet
+        jobnames_q = []
+        #while (ephem.now()-sunrise < 10*ephem.minute or not queue.empty() or
+        while (ephem.now()-sunrise < 15*ephem.minute or not queue.empty() or
+               # in night mode, also wait until all jobs are finished
+               (mode=='night' and len(list_active_jobs(jobnames_q)) > 0)):
 
-                log.info ('python command string to execute: {}'
-                          .format(python_cmdstr))
-
-
-                # use single thread for calibration files
-                if np.any([s in filename.lower()
-                           for s in ['bias', 'flat', 'dark']]):
-                    nthreads = 1
-
+            if queue.empty():
+                if mode == 'night':
+                    time.sleep(10)
                 else:
+                    # in day mode, no additional files should be coming
+                    # in, so can break out of while loop
+                    break
 
-                    # default number of threads for object images
-                    nthreads = 2
+            else:
+                filename = get_file (queue)
+                if filename is not None:
 
-                    # if field contains many Gaia sources, use more
-                    # threads
-                    try:
-                        # extract field ID from header
-                        header = read_hdulist(filename, get_data=False,
-                                              get_header=True)
-                        if 'OBJECT' in header:
-                            field_id = int(header['OBJECT'])
-                            # set nthreads depending on ngaia
-                            ngaia = ngaia_dict[field_id]
-                            if ngaia > 2e5:
-                                nthreads = 4
+                    # Python command to execute
+                    python_cmdstr = (
+                        'python /Software/BlackBOX/blackbox.py --img_reduce True '
+                        '--cat_extract True --trans_extract True --keep_tmp False '
+                        '--force_reproc_new {} --image {}'
+                        .format(filename, force_reproc_new))
 
-                            if ngaia > 5e5:
-                                nthreads = 6
-
-                            if ngaia > 1e6:
-                                nthreads = 8
-
-                            log.info ('estimated # Gaia sources in field ({}): '
-                                      '{}; using {} threads for {}'
-                                      .format(field_id, ngaia, nthreads,
-                                              filename))
-                    except Exception as e:
-                        log.warning ('exception occurred when inferring ngaia '
-                                     'for {}; using default nthreads ({}): {}'
-                                     .format(filename, nthreads, e))
+                    log.info ('python command string to execute: {}'
+                              .format(python_cmdstr))
 
 
-                # process it through a SLURM batch job
-                jobname = filename.split('/')[-1].split('.fits')[0]
-                slurm_process (python_cmdstr, nthreads, runtime, jobname,
-                               jobnight, date_begin=date_begin)
+                    # use single thread for calibration files
+                    if np.any([s in filename.lower()
+                               for s in ['bias', 'flat', 'dark']]):
+                        nthreads = 1
 
-                # append filename to list of files processed
-                jobnames.append(jobname)
+                    else:
+                        # default number of threads for object images
+                        nthreads = 2
+
+                        # if field contains many Gaia sources, use more
+                        # threads
+                        try:
+                            # extract field ID from header
+                            header = read_hdulist(filename, get_data=False,
+                                                  get_header=True)
+                            if 'OBJECT' in header:
+                                field_id = int(header['OBJECT'])
+                                # set nthreads depending on ngaia
+                                ngaia = ngaia_dict[field_id]
+                                if ngaia > 2e5:
+                                    nthreads = 4
+
+                                if ngaia > 5e5:
+                                    nthreads = 6
+
+                                if ngaia > 1e6:
+                                    nthreads = 8
+
+                                log.info ('estimated # Gaia sources in field ({}): '
+                                          '{}; using {} threads for {}'
+                                          .format(field_id, ngaia, nthreads,
+                                                  filename))
+                        except Exception as e:
+                            log.warning ('exception occurred when inferring ngaia '
+                                         'for {}; using default nthreads ({}): {}'
+                                         .format(filename, nthreads, e))
 
 
+                    # process it through a SLURM batch job
+                    jobname = filename.split('/')[-1].split('.fits')[0]
+                    slurm_process (python_cmdstr, nthreads, runtime, jobname,
+                                   jobnight, date_begin=date_begin)
 
+                    # append filename to list of files processed
+                    jobnames_q.append(jobname)
+
+        return jobnames_q
+
+
+    # maximum wait time equal to twice the input [runtime]
+    wait_max = 2 * np.sum(np.array(runtime.split(':')).astype(int)
+                          *np.array([3600, 60, 1]))
+
+    def wait_for (jobnames_wait, label):
+        if len(jobnames_wait) == 0:
+            return
+        log.info ('waiting for {} {} job(s) to finish'
+                  .format(len(jobnames_wait), label))
+        nsec_wait = wait4jobs2finish (jobnames_wait, wait_max=wait_max)
+        log.info ('waited for {:.2f} hours for the {} jobs to finish'
+                  .format(nsec_wait/3600, label))
+
+
+    ############################################################
+    # step 1: night mode: reduce all images, including the ones that
+    # arrive during the night; day mode: reduce calibration frames
+    ############################################################
+    jobnames = process_queue()
+    
+    if mode == 'night':
+        log.info ('night has finished and queue is empty')
+        # watchdog can be stopped
+        observer.stop() #stop observer
+        observer.join() #join observer
+
+    wait_for (jobnames, 'image reduction')
 
     log.info ('night has finished and queue is empty')
 
 
-    # watchdog can be stopped
-    observer.stop() #stop observer
-    observer.join() #join observer
+    ############################################################
+    # step 2: create master frames
+    ############################################################
+    if make_masters:
+
+        jobnames_masters = []
+        # create master frames
+        python_cmdstr_master = ('python /Software/BlackBOX/blackbox.py '
+                                '--master_date {}'.format(date_eve))
+        # process masters through a SLURM batch job; could split this up
+        # into several jobs, one for the master bias and one for each of
+        # the master flats in a specific filter, but even with a single
+        # task this takes only about 10-15 minutes
+        jobname_masters = 'masters_{}'.format(date_eve)
+        slurm_process (python_cmdstr_master, nthreads=4, runtime='1:00:00',
+                       jobname=jobname_masters, jobnight=jobnight,
+                       date_begin=date_begin)
+        jobnames.append(jobname_masters)
+        jobnames_masters.append(jobname_masters[tel])
+
+        # in day mode, science frames are only reduced after the
+        # masters have been made
+        if mode == 'day' and reduce_science_data:
+            wait_for (jobnames_masters, 'master frame')
 
 
-    # now waiting until no more running jobs left setting maximum wait
-    # time equal to twice the input [runtime]
-    log.info ('checking if there are any running/pending jobs left')
-    wait_max = 2 * np.sum(np.array(runtime.split(':')).astype(int)
-                          *np.array([3600, 60, 1]))
-    nsec_wait = wait4jobs2finish (jobnames, wait_max=wait_max)
-    log.info ('waited for {:.2f} hours for all individual jobs to finish'
-              .format(nsec_wait/3600))
+    ############################################################
+    # step 3 (day mode only): reduce the science frames
+    ############################################################
+    if mode == 'day' and reduce_science_data:
 
+        log.info ('reducing {} science frames'.format(len(files_science)))
+        for filename in files_science:
+            q.put(filename)
 
-    # create master frames
-    python_cmdstr_master = ('python /Software/BlackBOX/blackbox.py '
-                            '--master_date {}'.format(date_eve))
-    # process masters through a SLURM batch job; could split this up
-    # into several jobs, one for the master bias and one for each of
-    # the master flats in a specific filter, but even with a single
-    # task this takes only about 10-15 minutes
-    jobname_masters = 'masters_{}'.format(date_eve)
-    slurm_process (python_cmdstr_master, nthreads=4, runtime='1:00:00',
-                   jobname=jobname_masters, jobnight=jobnight,
-                   date_begin=date_begin)
-    jobnames.append(jobname_masters)
+        jobnames_science = process_queue()
+        jobnames += jobnames_science
 
+        # header tables and night reports need the reduced science frames
+        wait_for (jobnames_science, 'science reduction')
+ 
 
-    # wait for masters to finish; not really needed for the remaining
-    # tasks - preparing and sending the night report and adding last
-    # night's fits header keys to the big header tables
-    nsec_wait = wait4jobs2finish ([jobname_masters], wait_max=3600)
-    log.info ('waited for {:.0f}s for masters to finish'.format(nsec_wait))
-
-
-    # create night report and weather screenshot; this needs to be done
-    # inside the container because firefox is not available outside;
-    # this requires create_obslog to be runable from the command line,
-    # which can be done through the -c option:
-    if mode == 'night':
-        screenshot = True
-    else:
-        # in day mode, do not make screenshot, since it's an older
-        # date that is being processed
-        screenshot = False
-
-    try:
-        if False:
-            python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
-                             'from blackbox import create_obslog; '
-                             'create_obslog (\'{}\', email=True, '
-                             'tel=\'{}\', weather_screenshot={})\"'
-                             .format(date, tel, screenshot))
-
-            jobname = 'obslog_{}'.format(date_eve)
-            slurm_process (python_cmdstr, nthreads=1, runtime='0:10:00',
-                           jobname=jobname, jobnight=jobnight,
-                           date_begin=date_begin)
-            jobnames.append(jobname)
-
-        else:
-            create_obslog (date, email=True, tel=tel,
-                           weather_screenshot=screenshot)
-
-    except Exception as e:
-        log.exception('exception occurred while creating {} obslog '
-                      'for date {}: {}'.format(tel, date, e))
-
-
-    # add number of header keywords of newly reduced images to big
+    ############################################################
+    # step 4: add number of header keywords of newly reduced images to
     # header fits tables
-    try:
+    ############################################################
+    if update_hdrtables:
 
-        # loop different catalogs
-        for cat_type in ['cat', 'trans', 'sso']:
+        # add number of header keywords of newly reduced images to big
+        # header fits tables
+        try:
 
-            # add night's headers to header file
-            fits_header = ('{}/data/hdrtables/{}_headers_{}.fits'
-                           .format(data_dir, tel, cat_type))
-            path_full = '{}/{}'.format(red_dir, date_dir)
-            end_str = ''
-            if cat_type == 'cat':
-                search_str = '_red_{}.fits'.format(cat_type)
+            # loop different catalogs
+            for cat_type in ['cat', 'trans', 'sso']:
+
+                # add night's headers to header file
+                fits_header = ('{}/data/hdrtables/{}_headers_{}.fits'
+                               .format(data_dir, tel, cat_type))
+                path_full = '{}/{}'.format(red_dir, date_dir)
+                end_str = ''
+                if cat_type == 'cat':
+                    search_str = '_red_{}.fits'.format(cat_type)
+                else:
+                    search_str = '_{}.fits'.format(cat_type)
+
+                python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
+                                 'from blackbox import add_headkeys; '
+                                 'add_headkeys (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\')\"'
+                                 .format(path_full, fits_header,
+                                         search_str, end_str, tel))
+
+                jobname = 'add_headkeys_{}_{}'.format(cat_type, date_eve)
+                slurm_process (python_cmdstr, nthreads=1, runtime='0:30:00',
+                               jobname=jobname, jobnight=jobnight, date_begin=date_begin)
+                jobnames.append(jobname)
+
+        except Exception as e:
+            log.exception('exception occurred during adding header keys: {}'
+                          .format(e))
+
+
+    ############################################################
+    # step 5: create night reports
+    ############################################################
+    if create_nightreports:
+
+        if mode == 'night':
+            screenshot = True
+        else:
+            # in day mode, do not make screenshot, since it's an older
+            # date that is being processed
+            screenshot = False
+
+        try:
+            if False:
+                python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
+                                 'from blackbox import create_obslog; '
+                                 'create_obslog (\'{}\', email=True, '
+                                 'tel=\'{}\', weather_screenshot={})\"'
+                                 .format(date, tel, screenshot))
+
+                jobname = 'obslog_{}'.format(date_eve)
+                slurm_process (python_cmdstr, nthreads=1, runtime='0:10:00',
+                               jobname=jobname, jobnight=jobnight,
+                               date_begin=date_begin)
+                jobnames.append(jobname)
+
             else:
-                search_str = '_{}.fits'.format(cat_type)
+                create_obslog (date, email=True, tel=tel,
+                               weather_screenshot=screenshot)
 
-
-            # cmd
-            python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
-                             'from blackbox import add_headkeys; '
-                             'add_headkeys (\'{}\', \'{}\', \'{}\', \'{}\', \'{}\')\"'
-                             .format(path_full, fits_header,
-                                     search_str, end_str, tel))
-
-            jobname = 'add_headkeys_{}_{}'.format(cat_type, date_eve)
-            slurm_process (python_cmdstr, nthreads=1, runtime='0:30:00',
-                           jobname=jobname, jobnight=jobnight, date_begin=date_begin)
-            jobnames.append(jobname)
-
-
-    except Exception as e:
-        log.exception('exception occurred during adding header keys: {}'
-                      .format(e))
+        except Exception as e:
+            log.exception('exception occurred while creating {} obslog '
+                          'for date {}: {}'.format(tel, date, e))
 
 
     # now that night has finished, collect individual logfiles
     # produced by Slurm and append them to the logging for this night
-    try:
-        for jobname in jobnames:
-            logfile_slurm = '{}/{}.err'.format(jobnight, jobname)
-            if os.path.isfile(logfile_slurm):
-                with open(logfile_slurm, 'r') as f:
-                    log.info (f.read())
-    except Exception as e:
-        log.exception('exception occurred during appending of individual '
-                      'logfiles to the general logfile: {}'.format(e))
+    if False:
+        try:
+            for jobname in jobnames:
+                logfile_slurm = '{}/{}.err'.format(jobnight, jobname)
+                if os.path.isfile(logfile_slurm):
+                    with open(logfile_slurm, 'r') as f:
+                        log.info (f.read())
+        except Exception as e:
+            log.exception('exception occurred during appending of individual '
+                          'logfiles to the general logfile: {}'.format(e))
 
 
+    log.info('All done')
+    
     return
+
+
+################################################################################
+
+def is_calib_file (filename):
+
+    """True if [filename] is a bias, dark or flat frame"""
+
+    return any(s in filename.lower() for s in ['bias', 'dark', 'flat'])
 
 
 ################################################################################
@@ -1693,10 +1779,34 @@ def main ():
                         'incoming images; default=night')
     parser.add_argument('--runtime', type=str, default='6:00:00',
                         help='runtime requested per image; default=6:00:00')
+    parser.add_argument('--force_reproc_new', type=str2bool, default=False,
+                        help='force reprocessing (overwriting) of image; '
+                        'default=False')
+
+    # Day-mode switches (in night mode, all steps are executed)
+    parser.add_argument('--make_masters', type=str2bool, default=True,
+                        help='reduce biases/flats and make masters before ; '
+                        'reducing science data. Only relevant in day mode; '
+                        'default=True. In night mode, biases/flats are reduced'
+                        'alongside science images and masters are only made '
+                        'after processing all images.')
+    parser.add_argument('--reduce_science_data', type=str2bool, default=True,
+                        help='reduce science images; default=True. Always True'
+                        ' in night mode.')
+    parser.add_argument('--update_hdrtables', type=str2bool, default=True,
+                        help='Update header tables; default=True. Always True '
+                        'in night mode.')
+    parser.add_argument('--create_nightreports', type=str2bool, default=True,
+                        help='Create night reports; default=True. Always True '
+                        'in night mode.')
     args = parser.parse_args()
 
 
-    run_blackbox_slurm (args.date, args.nthreads, args.mode, args.runtime)
+    run_blackbox_slurm (args.date, args.nthreads, args.mode, args.runtime,
+                        args.force_reproc_new, make_masters=args.make_masters,
+                        reduce_science_data=args.reduce_science_data,
+                        update_hdrtables=args.update_hdrtables,
+                        create_nightreports=args.create_nightreports)
 
 
 ################################################################################
