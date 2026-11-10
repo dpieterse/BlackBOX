@@ -62,7 +62,7 @@ keep_tmp = False
 # switch to save thumbnails in transient catalog
 save_thumbnails = {'ML1': False, 'BG': False}
 
-# switch to save thumbnails as separate pngs in designated folder/bucket
+# switch to save thumbnails as zips in designated folder/bucket
 save_thumbnails_pngs = {'ML1': True, 'BG': True}
 
 
@@ -344,8 +344,6 @@ ysize_chan, xsize_chan = 5280, 1320
 #===============
 # Email settings
 #===============
-# for ML: sender apparently needs to contain <@astro.ru.nl> for emails
-# to actually arrive at Radboud; not relevant for BG/Google Cloud
 sender = {'ML1': '<bg-admin@blackgem.org>',
           'BG': '<bg-admin@blackgem.org>'}
 # comma-separated email addresses of recipients

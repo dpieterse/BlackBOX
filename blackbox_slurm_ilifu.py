@@ -1,31 +1,26 @@
 import os
-import subprocess
-import glob
+
 import argparse
-import multiprocessing as mp
-
-# set up log
-import logging
-import time
-logfmt = ('%(asctime)s.%(msecs)03d [%(levelname)s, %(process)s] %(message)s '
-          '[%(funcName)s, line %(lineno)d]')
-datefmt = '%Y-%m-%dT%H:%M:%S'
-logging.basicConfig(level='INFO', format=logfmt, datefmt=datefmt)
-logFormatter = logging.Formatter(logfmt, datefmt)
-logging.Formatter.converter = time.gmtime #convert time in logger to UTC
-log = logging.getLogger()
-#log.propagate = False
-
-import numpy as np
-import astropy.io.fits as fits
-from astropy.io import ascii
-from astropy.time import Time
-from astropy.table import Table, vstack, unique
-from astropy import units as u
-
+#import calendar
 import ephem
-from watchdog.observers.polling import PollingObserver
+import glob
+import logging
+import shutil
+import subprocess
+import socket
+import time
+
+import multiprocessing as mp
+import numpy as np
+
+from astropy.io import ascii, fits
+from astropy.table import Table
+from astropy.time import Time
+from astropy import units as u
+from datetime import datetime, timedelta
+from PIL import Image
 from watchdog.events import FileSystemEventHandler
+from watchdog.observers.polling import PollingObserver
 
 # to send email
 import smtplib
@@ -36,30 +31,71 @@ from email.utils import formatdate
 from email import encoders
 
 
-__version__ = '0.7'
+# set up log
+logfmt = ('%(asctime)s.%(msecs)03d [%(levelname)s, %(process)s] %(message)s '
+          '[%(funcName)s, line %(lineno)d]')
+datefmt = '%Y-%m-%dT%H:%M:%S'
+logging.basicConfig(level='INFO', format=logfmt, datefmt=datefmt)
+logFormatter = logging.Formatter(logfmt, datefmt)
+logging.Formatter.converter = time.gmtime #convert time in logger to UTC
+log = logging.getLogger()
+#log.propagate = False
+class DropMsgFilter (logging.Filter):
+    """drop log records whose message contains any of the given strings"""
+    def __init__(self, substrings):
+        super().__init__()
+        self.substrings = substrings
+    def filter(self, record):
+        return not any(s in record.getMessage() for s in self.substrings)
+drop_noisy = DropMsgFilter(['AdaptiveReadaheadCache enabled'])
+for handler in log.handlers:       # the stream handler made by basicConfig
+    handler.addFilter(drop_noisy)
 
 
+__version__ = '0.8.0'
+
+
+################################################################################
 # hardcode the settings below, because they are not accessible on the
 # Slurm login node through the usual set_zogy and set_blackbox
 # settings files
 tel = 'ML1'
 data_dir = '/idia/projects/meerlicht'
-raw_dir = '{}/data/raw/{}'.format(data_dir, tel)
-red_dir = '{}/data/red/{}'.format(data_dir, tel)
-genlog_dir = '{}/RunBlackBOX/log'.format(data_dir)
+raw_dir = {}
+red_dir = {}
+tmp_dir = {}
+thumbnails_dir = {}
+
+raw_dir[tel] = '{}/data/raw/{}'.format(data_dir, tel)
+red_dir[tel] = '{}/data/red/{}'.format(data_dir, tel)
+tmp_dir[tel] = '{}/data/tmp/{}'.format(data_dir, tel)
+thumbnails_dir[tel] = '{}/data/thumbnails/{}'.format(data_dir, tel)
+
+ref_dir = '{}/data/ref'.format(data_dir)
+log_dir = '{}/RunBlackBOX/log'.format(data_dir)
 # folder in which to run/save jobs and logs for the nightly processing
-job_dir = '{}/Slurm/{}'.format(genlog_dir, tel)
+job_dir = '{}/Slurm/{}'.format(log_dir, tel)
 
 # calibration folder and field grid file
 cal_dir = '{}/CalFiles'.format(data_dir)
 mlbg_fieldIDs = '{}/MLBG_FieldIDs_Feb2022_nGaia.fits'.format(cal_dir)
-
 
 # MeerLICHT observatory settings
 obs_lat = -32.3799
 obs_lon = 20.8112
 obs_height = 1802
 obs_timezone = 'Africa/Johannesburg'
+
+# Email settings
+sender = 'BG Admin <bg-admin@blackgem.org>'
+# comma-separated email addresses of recipients
+recipients = 'ml-nightreports@blackgem.org'
+reply_to = 'bg-admin@blackgem.org'
+smtp_server = 'smtp-relay.gmail.com'
+port = 465
+use_SSL = True
+
+save_thumbnails_pngs = True
 
 
 ################################################################################
@@ -87,11 +123,12 @@ def adjust_horizon (observer, height):
 def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
 
     # create general logfile based on date/time
-    genlogfile = '{}/{}_{}.log'.format(genlog_dir, tel,
+    genlogfile = '{}/{}_{}.log'.format(log_dir, tel,
                                        Time.now().strftime('%Y%m%d_%H%M%S'))
     fileHandler = logging.FileHandler(genlogfile, 'a')
     fileHandler.setFormatter(logFormatter)
     fileHandler.setLevel('INFO')
+    fileHandler.addFilter(drop_noisy)
     log.addHandler(fileHandler)
     log.info ('general logfile created: {}'.format(genlogfile))
 
@@ -107,9 +144,9 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
 
 
     # if date is not specified, set it to the date of the last local
-    # noon; so just before 12:00 SAST yesterday's date will be used
+    # noon; so until noon yesterday's date will be used.
     # SAST is always 2 hours ahead of UT, so can add 2/24 to make the
-    # date change at local noon instead of noon UT.
+    # date change at local noon instead of noon UTC.
     date_today = Time(int(Time.now().jd+2/24), format='jd').strftime('%Y%m%d')
     if date is None:
         date = date_today
@@ -125,6 +162,8 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
                       .format(date, date_today))
             mode = 'day'
 
+    global proc_mode
+    proc_mode = mode
 
     # create list of all fits files already present in [read_path]
     read_path, date_eve = get_path(date, 'read')
@@ -318,17 +357,27 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
         # date that is being processed
         screenshot = False
 
+    try:
+        if False:
+            python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
+                             'from blackbox import create_obslog; '
+                             'create_obslog (\'{}\', email=True, '
+                             'tel=\'{}\', weather_screenshot={})\"'
+                             .format(date, tel, screenshot))
 
-    python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
-                     'from blackbox import create_obslog; '
-                     'create_obslog (\'{}\', email=True, '
-                     'tel=\'{}\', weather_screenshot={})\"'
-                     .format(date, tel, screenshot))
+            jobname = 'obslog_{}'.format(date_eve)
+            slurm_process (python_cmdstr, nthreads=1, runtime='0:10:00',
+                           jobname=jobname, jobnight=jobnight,
+                           date_begin=date_begin)
+            jobnames.append(jobname)
 
-    jobname = 'obslog_{}'.format(date_eve)
-    slurm_process (python_cmdstr, nthreads=1, runtime='0:10:00',
-                   jobname=jobname, jobnight=jobnight, date_begin=date_begin)
-    jobnames.append(jobname)
+        else:
+            create_obslog (date, email=True, tel=tel,
+                           weather_screenshot=screenshot)
+
+    except Exception as e:
+        log.exception('exception occurred while creating {} obslog '
+                      'for date {}: {}'.format(tel, date, e))
 
 
     # add number of header keywords of newly reduced images to big
@@ -339,7 +388,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00'):
         for cat_type in ['cat', 'trans', 'sso']:
 
             # add night's headers to header file
-            fits_header = ('{}/Headers/{}_headers_{}.fits'
+            fits_header = ('{}/data/hdrtables/{}_headers_{}.fits'
                            .format(data_dir, tel, cat_type))
             path_full = '{}/{}'.format(red_dir, date_dir)
             end_str = ''
@@ -457,7 +506,7 @@ def slurm_process (python_cmdstr, nthreads, runtime, jobname, jobnight,
             f.write ('#SBATCH --ntasks-per-node=1\n')
             f.write ('#SBATCH --cpus-per-task={}\n'.format(nthreads))
             f.write ('#SBATCH --time={}\n'.format(runtime))
-            f.write ('#SBATCH --mem-per-cpu=7GB\n')
+            f.write ('#SBATCH --mem-per-cpu=12GB\n')
             f.write ('#SBATCH --job-name={}\n'.format(jobname))
             f.write ('\n')
             f.write ('#SBATCH --account={}\n'.format(account))
@@ -526,6 +575,454 @@ def slurm_process (python_cmdstr, nthreads, runtime, jobname, jobnight,
 
 
     return
+
+
+################################################################################
+
+def create_obslog (date, email=True, tel=None, weather_screenshot=True):
+
+    # extract table with various observables/keywords from the headers
+    # of all raw/reduced files of a particular (evening) date,
+    # e.g. ORIGFILE, IMAGETYP, DATE-OBS, PROGNAME, PROGID, OBJECT,
+    # FILTER, EXPTIME, RA, DEC, AIRMASS, FOCUSPOS, image quality
+    # (PSF-FWHM), QC-FLAG, ..
+    #
+    # if email==True, also send an email to people that are
+    # interested; the email parameters such as sender, recipients,
+    # etc., can be defined in BlackBOX settings file
+
+
+    date_eve = ''.join(e for e in date if e.isdigit())
+    if len(date_eve) != 8:
+        log.error ('input date to function create_obslog needs to consist of '
+                   'at least 8 digits, yyyymmdd, where the year, month and '
+                   'day can be connected with any type of character, e.g. '
+                   'yyyy/mm/dd or yyyy-mm-dd, etc.')
+        return
+
+
+    date_dir = '{}/{}/{}'.format(date_eve[0:4], date_eve[4:6], date_eve[6:8])
+    red_path = red_dir[tel]
+    full_path = '{}/{}'.format(red_path, date_dir)
+
+    log.info ('full_path: {}'.format(full_path))
+
+
+    # collect biases, darks, flats and science frames in different
+    # lists, using [list_files] as little as possible
+    log.info ('collecting lists of reduced bias, dark, flat and science frames')
+    all_files_list = list_files('{}'.format(full_path), search_str='.fits',
+                                recursive=True)
+    bias_list = [fn for fn in all_files_list if '/bias/' in fn]
+    dark_list = [fn for fn in all_files_list if '/dark/' in fn]
+    flat_list = [fn for fn in all_files_list if '/flat/' in fn]
+    object_list = [fn for fn in all_files_list if '_red.fits' in fn]
+
+
+    filenames = [bias_list, dark_list, flat_list, object_list]
+    # clean up [filenames]
+    filenames = [f for sublist in filenames for f in sublist]
+
+
+    # number of different reduced files
+    nred = len(filenames)
+    nbias_red = len(bias_list)
+    ndark_red = len(dark_list)
+    nflat_red = len(flat_list)
+    nobject_red = len(object_list)
+
+    # number of thumbnail zips
+    if save_thumbnails_pngs:
+        thumbnails_path = '{}/{}'.format(thumbnails_dir[tel], date_dir)
+        zip_list = list_files(thumbnails_path, end_str='.zip')
+        nzips = len(zip_list)
+
+        # Older BG data have unzipped directories instead of zips
+        if nzips == 0:
+            if thumbnails_path[0:5] == "gs://":
+                _, path_nobucket = get_bucket_name(thumbnails_path)
+            else:
+                path_nobucket = thumbnails_path
+            path_depth = len([p for p in path_nobucket.split('/') if p])
+            if path_depth > 0:
+                log.info ('Older data: counted unzipped thumbnail dirs')
+            nzips = len(list_folders(thumbnails_path, depth=path_depth+1))
+
+    # collect raw image list
+    raw_path = raw_dir[tel]
+    log.info ('collecting list of raw frames')
+    raw_list = list_files('{}/{}'.format(raw_path, date_dir), search_str='.fits')
+
+    # number of different raw files
+    nraw = len(raw_list)
+    nbias_raw = 0
+    ndark_raw = 0
+    nflat_raw = 0
+    nobject_raw = 0
+    nobject_notracking = 0
+    first = True
+    for f in raw_list:
+        if 'bias' in f.lower():
+            nbias_raw += 1
+        elif 'dark' in f.lower():
+            ndark_raw += 1
+        elif 'flat' in f.lower():
+            nflat_raw += 1
+        elif 'singleobservation' not in f.lower():
+            nobject_raw += 1
+
+            if first:
+                log.info ('reading headers of raw object frames')
+            first = False
+            hdr_raw = read_hdulist(f, get_data=False, get_header=True, memmap=True)
+            if 'ISTRACKI' in hdr_raw and str2bool(hdr_raw['ISTRACKI']) == False:
+                nobject_notracking += 1
+
+    # maximum filename length for column format
+    #max_length = max([len(f.strip()) for f in filenames])
+
+    # keywords to add to table
+    keys = ['ORIGFILE', 'IMAGETYP', 'DATE-OBS', 'PROGNAME', 'PROGID', 'OBJECT',
+            'FILTER', 'EXPTIME', 'RA', 'DEC', 'AIRMASS', 'FOCUSPOS',
+            'S-SEEING', 'CL-BASE', 'RH-MAST', 'WINDAVE', 'LIMMAG', 'QC-FLAG',
+            'QCRED1', 'QCRED2', 'QCRED3']
+    formats = {#'ORIGFILE': '{:60}',
+        #'IMAGETYP': '{:<8}',
+        'DATE-OBS': '{:.19}',
+        'EXPTIME': '{:.1f}',
+        'RA': '{:.3f}',
+        'DEC': '{:.3f}',
+        'AIRMASS': '{:.3f}',
+        'S-SEEING': '{:.4}',
+        'CL-BASE': '{:.4}',
+        'RH-MAST': '{:.4}',
+        'WINDAVE': '{:.4}',
+        'LIMMAG': '{:.5}'
+    }
+
+
+    # loop input list of filenames
+    log.info ('reading headers of reduced frames')
+    rows = []
+    for filename in filenames:
+
+        fn_hdr = filename.replace('.fits.fz', '_hdr.fits')
+        if isfile (fn_hdr):
+            file2read = fn_hdr
+        else:
+            file2read = filename
+
+        # read file header
+        header = read_hdulist (file2read, get_data=False, get_header=True)
+
+        # prepare row of filename and header values
+        row = []
+        for key in keys:
+            if key in header:
+                row.append(header[key])
+            else:
+                row.append(' ')
+
+        # append to rows
+        rows.append(row)
+
+
+    # create table from rows
+    nobject_noref = 0
+    names = []
+    for i_key, key in enumerate(keys):
+        names.append(key)
+
+    if len(rows) == 0:
+        # rows without entries: create empty table
+        table = Table(names=names)
+    else:
+        table = Table(rows=rows, names=names)
+
+        # Count how many images do not have ref images, but ignore the red-
+        # flagged images as dummy trans products are created for those
+        is_obj = np.array([str(t).strip().lower()=='object'
+                           for t in table['IMAGETYP']])
+        is_red = np.array([str(q).strip().lower()=='red'
+                           for q in table['QC-FLAG']])
+        sel = is_obj & ~is_red
+
+        objs = np.array([str(o).strip() for o in table['OBJECT'][sel]])
+        filts = np.array([str(f).strip() for f in table['FILTER'][sel]])
+        for obj, filt in set(zip(objs, filts)):
+            list_ref = list_files('{}/{}'.format(ref_dir, obj),
+                                  search_str='_{}_'.format(filt),
+                                  end_str='_red.fits.fz')
+            if len(list_ref) == 0:
+                n_combo = int(np.sum((objs==obj) & (filts==filt)))
+                log.info ('No ref for {} in {} ({} images)'
+                          .format(obj, filt, n_combo))
+                nobject_noref += n_combo
+
+    # order by DATE-OBS
+    index_sort = np.argsort(table['DATE-OBS'])
+    table = table[index_sort]
+
+    # write table to ASCII file in tmp folder
+    tmp_path = tmp_dir[tel]
+    # just in case it does not exist yet, create it
+    make_dir (tmp_path)
+    obslog_tmp = '{}/{}_{}_obslog.txt'.format(tmp_path, tel, date_eve)
+    log.info ('saving header info to {}'.format(obslog_tmp))
+
+
+    # if table is empty, no files were processed and reduced folder
+    # needs to be created before writing the empty table
+    if len(rows)==0:
+        make_dir (full_path)
+        ascii.write (table, obslog_tmp, overwrite=True)
+    else:
+        # write the filled table
+        ascii.write (table, obslog_tmp, format='fixed_width_two_line',
+                     delimiter_pad=' ', position_char=' ',
+                     formats=formats, overwrite=True)
+
+
+    # for MeerLICHT and BlackGEM, save the weather page as a screen
+    # shot in tmp folder, and add it as attachment to the mail
+    png_present = False
+    if tel=='ML1':
+        png_tmp = '{}/{}_SAAOweather.png'.format(tmp_path, date_eve)
+        webpage = 'https://suthweather.saao.ac.za'
+        width = 1500
+        height = 2150
+
+    else:
+        png_tmp = '{}/{}_LaSilla_meteo.png'.format(tmp_path, date_eve)
+
+        # Deprecated link:
+        # date in format e.g. 28+Oct+2024
+        #date_tmp = '{}+{}+{}'.format(date_eve[6:8],
+        #                             calendar.month_abbr[int(date[4:6])],
+        #                             date[0:4])
+        #webpage = ('https://archive.eso.org/asm/ambient-server?'
+        #           'night={}&site=lasilla'.format(date_tmp))
+
+        # the following line is only returning a white stripe, perhaps
+        # only the very top of the webpage?
+        #webpage = ('https://www.eso.org/asm/ui/publicLog?name=LaSilla&startDate='
+        #           '{}'.format(date_eve))
+        webpage = 'https://www.ls.eso.org/lasilla/dimm/meteomonitor.html'
+
+        width = 1500
+        height = 1150
+
+        if proc_mode != 'night':
+            try:
+                # Get the weather graphs from the archive instead of making a
+                # screenshot of last night's weather and instead of using the
+                # potentially existing image in the bucket (which, in the past,
+                # was the screenshot of the processing night, not necessarily
+                # the observing night).
+                date_next = (datetime.strptime(date_eve, '%Y%m%d') +
+                             timedelta(days=1))
+                ps_img = 'end{}.ps'.format(date_next.strftime('%y%m%d'))
+                webpage = ('https://www.ls.eso.org/lasilla/dimm/Archive/{}'
+                           .format(ps_img))
+                cmd = ["wget", "-N", webpage]
+                result = subprocess.run(cmd, capture_output=True, timeout=180,
+                                        cwd=tmp_path)
+                #log.info(result.stderr.decode('UTF-8'))
+                with Image.open("{}/{}".format(tmp_path, ps_img)) as img:
+                    rotated_img = img.rotate(270, expand=True)
+                    rotated_img.save(png_tmp, "PNG")
+
+                # Succesfully retrieved from archive. Won't make a screenshot
+                weather_screenshot = False
+                remove_files (["{}/{}".format(tmp_path, ps_img)], verbose=True)
+
+            except Exception as e:
+                log.exception ('exception occurred while downloading weather '
+                               'page {}: {}'.format(webpage, e))
+
+    # define png destination
+    png_dest = '{}/{}/{}'.format(red_path, date_dir, png_tmp.split('/')[-1])
+
+    # Don't remake screenshot of last night's weather if screenshot already
+    # exists (to prevent overwriting older archival screenshots with the new
+    # processing night's screenshot)
+    if weather_screenshot and not isfile(png_dest):
+        try:
+
+            log.info ('saving screenshot of {} to {}'.format(webpage, png_tmp))
+            cmd = ['wkhtmltoimage', '--quiet', '--quality', '80',
+                   '--crop-w', str(width), '--crop-h', str(height),
+                   webpage, png_tmp]
+            result = subprocess.run(cmd, capture_output=True, timeout=180)
+            #log.info('stdout: {}'.format(result.stdout.decode('UTF-8')))
+            #log.info('stderr: {}'.format(result.stderr.decode('UTF-8')))
+
+        except Exception as e:
+            log.exception ('exception occurred while making screenshot of '
+                           'weather page {}: {}'.format(webpage, e))
+            # do not include screenshot in email
+            png_tmp = None
+
+    # check if screenshot already exists
+    elif isfile(png_dest) and not isfile(png_tmp):
+        copy_file (png_dest, png_tmp, move=False)
+        png_present = True
+
+
+    # additional info that could be added to body of email
+    # - any raw files that were not reduced?
+    # - list any observing gaps, in fractional UT hours
+    # - using above gaps, list fraction of night that telescope was observing
+    # - list average exposure overhead in seconds
+
+    body  = '{}: summary of {} observations:\n'.format(tel,
+                                                       date_dir.replace('/','-'))
+    body += '----------------------------------------\n'
+
+    body += ('# raw images:        {} ({} biases, {} darks, {} flats, {} objects)'
+             '\n'.format(nraw, nbias_raw, ndark_raw, nflat_raw, nobject_raw))
+    body += ('# reduced images:    {} ({} biases, {} darks, {} flats, {} objects)'
+             '\n'.format(nred, nbias_red, ndark_red, nflat_red, nobject_red))
+    body += ('# untracked objects: {} (no reduced images)\n'
+             .format(nobject_notracking))
+
+    # collect full-source, transient and sso catalog lists, using
+    # [list_files] as little as possible
+    all_cats_list = list_files('{}/{}'.format(full_path, tel), end_str='.fits')
+
+    log.info ('collecting lists of full-source, transient and sso catalogs, and '
+              'counting how many of them are flagged red')
+    cat_list = [c for c in all_cats_list if c.endswith('_red_cat.fits')]
+    body += ('# full-source cats:  {} ({} red-flagged)\n'.format(
+        len(cat_list), count_redflags(cat_list)))
+
+    body += ('# no ref image for:  {} objects\n'.format(nobject_noref))
+
+    trans_list = [c for c in all_cats_list if c.endswith('_trans.fits')]
+    body += ('# transient cats:    {} ({} red-flagged)\n'.format(
+        len(trans_list), count_redflags(trans_list, key='TQC-FLAG')))
+
+    if save_thumbnails_pngs:
+        body += ('# thumbnail zips:    {}\n'.format(nzips))
+
+    sso_list = [c for c in all_cats_list if c.endswith('_trans_sso.fits')]
+    body += ('# SSO cats:          {} ({} empty)\n'.format(
+        len(sso_list), count_redflags(sso_list, key='SDUMCAT')))
+    body += '\n'
+
+
+    # link to weather page
+    body += 'Observing conditions: {}\n'.format(webpage)
+
+
+    if email:
+        # email the obslog (with the weather page for MeerLICHT as
+        # attachment) to a list of interested people
+        try:
+            # subject
+            subject = '{} night report {}'.format(tel, date_dir.replace('/','-'))
+
+            log.info ('sending email with subject {} to {} using smtp server {} '
+                      'on port {}'
+                      .format(subject, recipients, smtp_server, port))
+
+            send_email (recipients, subject, body,
+                        attachments='{},{}'.format(obslog_tmp, png_tmp),
+                        sender=sender, reply_to=reply_to,
+                        smtp_server=smtp_server, port=port, use_SSL=use_SSL)
+
+        except Exception as e:
+            log.exception('exception occurred during sending of email: {}'
+                          .format(e))
+
+    # now that email is sent, move obslog and weather screenshot
+    obslog_dest = '{}/{}/{}_{}_obslog.txt'.format(red_path, date_dir,
+                                                  tel, date_eve)
+    copy_file (obslog_tmp, obslog_dest, move=True)
+
+
+    if png_tmp and not png_present:
+        copy_file (png_tmp, png_dest, move=True)
+
+    return
+
+
+################################################################################
+
+def count_redflags(catlist, key='QC-FLAG'):
+
+    nredflags = 0
+
+    for catname in catlist:
+
+        fn_hdr = catname.replace('.fits', '_hdr.fits')
+        if isfile (fn_hdr):
+            file2read = fn_hdr
+        else:
+            file2read = catname
+
+
+        # read file header
+        header = read_hdulist (file2read, get_data=False, get_header=True)
+
+        # in case of full-source or transient catalog, 'red' should be
+        # in the QC-FLAG keyword, but for SSO cat, SDUMCAT being True
+        # indicates a red flag; "==True" is required because if the
+        # keyword is not a boolean, header[key] will always be True
+        if key in header and ('red' in str(header[key]) or header[key]==True):
+            nredflags += 1
+
+
+    return nredflags
+
+
+################################################################################
+
+def send_email (recipients, subject, body,
+                attachments=None,
+                sender='Radboud GW Alert <scheduler@blackgem.org>',
+                reply_to='bg-admin@blackgem.org',
+                smtp_server='smtp-relay.gmail.com',
+                port=465, use_SSL=True):
+
+    if use_SSL:
+        smtpObj = smtplib.SMTP_SSL(smtp_server, port)
+    else:
+        smtpObj = smtplib.SMTP(smtp_server, port)
+
+    smtpObj.ehlo()
+    send_from = sender
+    send_to = recipients.split(',')
+    msg = MIMEMultipart()
+    msg['from'] = send_from
+    msg['to'] = recipients
+    msg['reply-to'] = reply_to
+    msg['date'] = formatdate(localtime=True)
+    msg['subject'] = subject
+
+    if body is None:
+        text = ''
+    elif isfile(body):
+        with open(body, 'r') as f:
+            text = f.read()
+    else:
+        text = body
+
+    msg.attach( MIMEText(text) )
+
+    if attachments is not None:
+        att_list = attachments.split(',')
+        for attachment in att_list:
+            if isfile(attachment):
+                part = MIMEBase('application', "octet-stream")
+                part.set_payload( open(attachment,"rb").read() )
+                encoders.encode_base64(part)
+                part.add_header('Content-Disposition', 'attachment; filename={}'
+                                .format(attachment.split('/')[-1]))
+                msg.attach(part)
+
+    smtpObj.sendmail(send_from, send_to, msg.as_string())
+    smtpObj.close()
 
 
 ################################################################################
@@ -798,6 +1295,384 @@ def read_hdulist (fits_file, get_data=True, get_header=False,
                 return header
             else:
                 return
+
+
+################################################################################
+
+def get_bucket_name (path):
+
+    """infer bucket- and filename from [path], which is expected
+       to be gs://[bucket name]/some/path/file or [bucket
+       name]/some/path/file; if [path] starts with a forward slash,
+       empty strings will be returned"""
+
+    bucket_name = path.split('gs://')[-1].split('/')[0]
+    if len(bucket_name) > 0:
+        # N.B.: returning filename without the starting '/'
+        bucket_file = path.split(bucket_name)[-1][1:]
+    else:
+        bucket_file = ''
+
+    return bucket_name, bucket_file
+
+
+################################################################################
+
+def isfile (filename):
+
+    if filename[0:5] == 'gs://':
+
+        storage_client = storage.Client()
+        bucket_name, bucket_file = get_bucket_name (filename)
+        # N.B.: bucket_file should not start with '/'
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(bucket_file)
+        return blob.exists()
+
+    else:
+
+        return os.path.isfile(filename)
+
+
+################################################################################
+
+def isdir (folder):
+
+    if folder[0:5] == 'gs://':
+
+        if folder[-1] != '/':
+            folder = '{}/'.format(folder)
+
+        storage_client = storage.Client()
+        bucket_name, bucket_file = get_bucket_name (folder)
+        blobs = storage_client.list_blobs(bucket_name, prefix=bucket_file,
+                                          delimiter=None, max_results=1)
+        nblobs = len(list(blobs))
+
+        return nblobs > 0
+
+    else:
+
+        return os.path.isdir(folder)
+
+
+################################################################################
+
+def list_folders (path, search_str='', depth=None):
+
+    """function to return list of existing folders starting with
+       [path] (can be a folder or google cloud bucket name and path;
+       this does not have to be a precise or complete folder/path,
+       e.g. [path] can be some_path/some_file_basename), optionally
+       containing [search_str] without any wildcards. [depth]
+       determines how many folder depths are returned, starting from
+       the root directory, where only the folders at that precise
+       depth are returned and not their parent folders; for google
+       cloud buckets the root folder (depth=1) is considered to start
+       after the bucket name, i.e. gs://[bucket name]/[root
+       folder]/etc. If [depth] is not defined, all existing folders
+       are returned.
+
+    """
+
+    # use function [list_files] to list all files containing 'search_str'
+    file_list = list_files (path, search_str=search_str, recursive=True)
+
+
+    # running in google cloud?
+    google_cloud = (path[0:5]=='gs://')
+
+
+    # remove potential 'gs://' and bucket name
+    if google_cloud:
+
+        # infer bucket name
+        bucket_name, __ = get_bucket_name(path)
+
+        # chop off 'gs://[bucket_name]'
+        file_list = [fn.split(bucket_name)[-1] for fn in file_list]
+
+
+    if depth is None:
+        # list all existing folders
+        folder_list = ['/'.join(fn.split('/')[:-1]) for fn in file_list]
+    else:
+        # create folder list with depth [depth]
+        folder_list = ['/'.join(fn.split('/')[:depth+1]) for fn in file_list
+                       # line added by Danielle to make sure only
+                       # folders with this precise depth are included
+                       # also for the linux file system
+                       if len(fn.rstrip('/').split('/')) > depth]
+
+
+    # remove duplicate folders and sort
+    folder_list = sorted(list(set(folder_list)))
+
+
+    # append 'gs://[bucket_name]' if needed
+    if google_cloud:
+        folder_list = ['gs://{}{}'.format(bucket_name, fn) for fn in folder_list]
+
+
+    # only folders, not files; added by Danielle as she noticed on the
+    # normal (linux) file system also files were returned
+    isfolder = [isdir(fn) for fn in folder_list]
+    folder_list = np.array(folder_list)[isfolder].tolist()
+
+
+    #log.info ('folder_list: {}'.format(folder_list))
+
+
+    return folder_list
+
+
+################################################################################
+
+def list_files (path, search_str='', end_str='', start_str=None,
+                recursive=False):
+
+    """function to return list of files starting with [path] (can be a
+       folder or google cloud bucket name and path; this does not have
+       to be a precise or complete folder/path, e.g. [path] can be
+       some_path/some_file_basename), with possible [end_str] and
+       containing [search_str] without any wildcards. If path is an
+       exact folder, then [start_str] can be used as the beginning of
+       the filename.
+
+    """
+
+    # is google cloud being used?
+    google_cloud = (path[0:5] == 'gs://')
+
+
+    # split input [path] into folder_bucket and prefix; if path is a
+    # folder, need to add a slash at the end, otherwise the prefix
+    # will be the name of the deepest folder
+    if isdir(path) and path[-1] != '/':
+        path = '{}/'.format(path)
+
+
+    # if path is indeed a folder, then prefix will be an empty string,
+    # which is fine below
+    folder_bucket, prefix = os.path.split(path.split('gs://')[-1])
+
+
+    # if path consists of just the bucket name including gs:// or just
+    # a path without any slashes at all, the above will lead to an
+    # empty folder_bucket and prefix=path; turn these around
+    if len(folder_bucket)==0:
+        folder_bucket = prefix
+        prefix = ''
+
+
+    # if prefix is empty and [start_str] is defined, use
+    # that as the prefix
+    if prefix=='' and start_str is not None:
+        prefix = start_str
+
+
+    # if not dealing with google cloud buckets, use glob
+    if not google_cloud:
+
+        #glob files
+        if recursive:
+            files = glob.glob('{}/**/{}*{}*{}'.format(folder_bucket, prefix,
+                                                      search_str, end_str),
+                              recursive=True)
+            if path in files:
+                files.remove(path)
+
+        else:
+            files = glob.glob('{}/{}*{}*{}'.format(folder_bucket, prefix,
+                                                   search_str, end_str))
+
+    else:
+
+        # for buckets, use storage.Client().list_blobs; see
+        # https://cloud.google.com/storage/docs/samples/storage-list-files-with-prefix#storage_list_files_with_prefix-python
+
+        # setting delimiter to '/' restricts the results to only the
+        # files in a given folder
+        if recursive:
+            delimiter = None
+        else:
+            delimiter = '/'
+
+
+        # bucket name and prefix (e.g. gs://) to add to output files
+        bucket_name, bucket_file = get_bucket_name(path)
+        bucket_prefix = path.split(bucket_name)[0]
+
+
+        if False:
+            log.info ('folder_bucket: {}'.format(folder_bucket))
+            log.info ('prefix: {}'.format(prefix))
+            log.info ('path: {}'.format(path))
+            log.info ('bucket_name: {}'.format(bucket_name))
+            log.info ('bucket_file: {}'.format(bucket_file))
+
+
+        # get the blobs
+        storage_client = storage.Client()
+        blobs = storage_client.list_blobs(bucket_name, prefix=bucket_file,
+                                          delimiter=delimiter)
+
+        # collect blobs' names in list of files
+        files = []
+        for blob in blobs:
+
+            filename = blob.name
+
+            # check for search string; if search string is empty,
+            # following if statement will be False
+            if search_str not in filename:
+                continue
+
+            # check if filename ends with [end_str]
+            len_ext = len(end_str)
+            if len_ext > 0 and filename[-len_ext:] != end_str:
+                # if not, continue with next blob
+                continue
+
+            # after surviving above checks, append filename including
+            # the bucket prefix and name
+            files.append('{}{}/{}'.format(bucket_prefix, bucket_name, filename))
+
+
+    #log.info ('files returned by [list_files]: {}'.format(files))
+    #log.info ('number of files returned by [list_files]: {}'.format(len(files)))
+
+
+    return files
+
+
+################################################################################
+
+def copy_file (src_file, dest, move=False, verbose=True):
+
+    """function to copy or move a file [src_file] to [dest], which may
+       be a file or folder; [src_file] and/or [dest] may be part of
+       the usual filesystem or in a google cloud bucket; in the latter
+       case the argument(s) should start with gs://[bucket_name]
+
+    """
+
+    if verbose:
+        if move:
+            label = 'moving'
+        else:
+            label = 'copying'
+
+        log.info('{} {} to {}'.format(label, src_file, dest))
+
+
+    # if not dealing with google cloud buckets, use shutil.copy2 or shutil.move
+    if not (src_file[0:5] == 'gs://' or dest[0:5] == 'gs://'):
+
+        if not move:
+            shutil.copy2(src_file, dest)
+        else:
+            shutil.move(src_file, dest)
+
+    else:
+
+        # this could be done in python, but much easier with gsutil
+        # from the shell
+        if move:
+            cp_cmd = 'mv'
+        else:
+            cp_cmd = 'cp'
+
+
+        cmd = ['gsutil', '-q', cp_cmd, src_file, dest]
+        result = subprocess.run(cmd)
+        #result = subprocess.run(cmd, capture_output=True)
+        #log.info(result.stdout.decode('UTF-8'))
+
+
+    return
+
+
+################################################################################
+
+def make_dir (path, empty=False):
+
+    """Function to make directory. If [empty] is True and the
+       directory already exists, it will first be removed. In case of
+       google cloud version, don't do anything - there are no
+       actual directories in a bucket."""
+
+
+    # check if google_cloud is set
+    if not path[0:5] == 'gs://':
+
+        # if already exists but needs to be empty, remove it first
+        if isdir(path) and empty:
+            shutil.rmtree(path)
+
+        # do not check if directory exists, just make it; changed this
+        # after racing condition occurred on the ilifu Slurm cluster
+        # when reducing flatfields, where different tasks need to make
+        # the same directory
+        os.makedirs(path, exist_ok=True)
+
+
+    return
+
+
+################################################################################
+
+def remove_files (filelist, verbose=False):
+
+
+    # make sure files exist
+    filelist = [f for f in filelist if isfile(f)]
+    if len(filelist)==0:
+        #log.warning ('no existing file(s) to remove')
+        return
+
+
+    # assume all files are either google cloud or not, so sufficient
+    # to only check the 1st file
+    google_cloud = (filelist[0][0:5]=='gs://')
+
+
+    if verbose:
+        for f in filelist:
+            log.info ('removing file {}'.format(f))
+
+
+    if not google_cloud:
+
+        hostname = socket.gethostname()
+        for f in filelist:
+            if 'coma' in hostname and 'astro11' in f:
+                cmd = ['ssh', 'astro11-srv', 'rm', f]
+                result = subprocess.run(cmd)
+            else:
+                os.remove(f)
+
+    else:
+        cmd = ['gcloud', 'storage', 'rm', '--read-paths-from-stdin',
+               '--no-user-output-enabled']
+        result = subprocess.run(cmd, input='\n'.join(filelist).encode('utf-8'))
+
+
+    return
+
+
+################################################################################
+
+# from https://stackoverflow.com/questions/15008758/parsing-boolean-values-with-argparse
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
 ################################################################################
