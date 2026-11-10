@@ -1,21 +1,77 @@
+# setting environment variable OMP_NUM_THREADS to number of threads,
+# (used by e.g. astroscrappy); use value from environment variable
+# SLURM_CPUS_PER_TASK if it is defined, otherwise set_bb.nthreads;
+# needs to be done before numpy is imported in [zogy]
 import os
-import gc
-import pickle
+import set_blackbox as set_bb
+os.environ['OMP_NUM_THREADS'] = str(os.environ.get('SLURM_CPUS_PER_TASK',
+                                                   set_bb.nthreads))
+
+import argparse
+import astroscrappy
+#import calendar
 import copy
-import tempfile
-import sys
-import calendar
-import warnings
+import ephem
+import fitsio
+import gc
+import glob
+import logging
+import pickle
+import platform
+import queue
+import re
+import shutil
 import socket
+import subprocess
+import sys
+import tempfile
+import time
+#import tracemalloc
+#tracemalloc.start()
+import warnings
 import zipfile
 
 #import multiprocessing as mp
 #mp_ctx = mp.get_context('spawn')
 
+from acstools.satdet import detsat, make_mask
+#from astroplan import moon
+from astropy import units as u
+from astropy.coordinates import Angle, FK5, get_body, ICRS, SkyCoord
+from astropy.io import ascii, fits
+from astropy.stats import sigma_clipped_stats
+from astropy.table import Table
+from astropy.time import Time
+from astropy.visualization import ZScaleInterval as zscale
+from astropy.visualization import astropy_mpl_style
+from datetime import datetime, timedelta
+from dateutil.tz import gettz
+from PIL import Image
+#from pympler import tracker
+from qc import qc_check, run_qc_check
+#from slackclient import SlackClient as sc
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers.polling import PollingObserver
+
+# For plotting
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+plt.style.use(astropy_mpl_style)
+matplotlib.rcParams.update({'font.size': 10})
+from matplotlib import colormaps
+from matplotlib.colors import Normalize
+
+# to send email
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email.utils import formatdate
+from email import encoders
+
 
 # set up log
-import logging
-import time
 logfmt = ('%(asctime)s.%(msecs)03d [%(levelname)s, %(process)s] %(message)s '
           '[%(funcName)s, line %(lineno)d]')
 datefmt = '%Y-%m-%dT%H:%M:%S'
@@ -25,65 +81,10 @@ logging.Formatter.converter = time.gmtime #convert time in logger to UTC
 log = logging.getLogger()
 #log.propagate = False
 
-import set_zogy
-import set_blackbox as set_bb
-
-#sys.path.append("/Software/match2SSO")
-import set_match2SSO as set_m2sso
-import match2SSO as m2sso
-
-# setting environment variable OMP_NUM_THREADS to number of threads,
-# (used by e.g. astroscrappy); use value from environment variable
-# SLURM_CPUS_PER_TASK if it is defined, otherwise set_bb.nthreads;
-# needs to be done before numpy is imported in [zogy]
-os.environ['OMP_NUM_THREADS'] = str(os.environ.get('SLURM_CPUS_PER_TASK',
-                                                   set_bb.nthreads))
-
-from zogy import *
-
-import re   # Regular expression operations
-import glob # Unix style pathname pattern expansion
-
-
-from datetime import datetime, timedelta
-from dateutil.tz import gettz
-from astropy.stats import sigma_clipped_stats
-from astropy.coordinates import Angle, SkyCoord, FK5, ICRS, get_body
-from astropy.time import Time
-from astropy import units as u
-from astropy.visualization import ZScaleInterval as zscale
-from astropy.visualization import astropy_mpl_style
-
-import astroscrappy
-from acstools.satdet import detsat, make_mask
-import shutil
-#from slackclient import SlackClient as sc
-import ephem
-from watchdog.observers.polling import PollingObserver
-from watchdog.events import FileSystemEventHandler
-
-from qc import qc_check, run_qc_check
-import platform
-
-from ASTA import ASTA
-
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-plt.style.use(astropy_mpl_style)
-matplotlib.rcParams.update({'font.size': 10})
-from matplotlib import colormaps
-from matplotlib.colors import Normalize
-
-
-import fitsio
-from PIL import Image
-
 
 # due to regular problems with downloading default IERS file (needed
 # to compute UTC-UT1 corrections for e.g. sidereal time computation),
 # Steven created a mirror of this file in a google storage bucket
-#
 # update on 2020-10-27: urls below not working properly now; default
 # server from which to download finals2000A.all seems to have changed
 # to (the mirror?):
@@ -95,21 +96,6 @@ iers.conf.iers_auto_url = (
 iers.conf.iers_auto_url_mirror = (
     'https://storage.googleapis.com/blackbox-auxdata/timing/finals2000A.all')
     #'ftp://cddis.gsfc.nasa.gov/pub/products/iers/finals2000A.all')
-
-#from astroplan import moon
-
-# to send email
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email.mime.text import MIMEText
-from email.utils import formatdate
-from email import encoders
-
-#from pympler import tracker
-#import tracemalloc
-#tracemalloc.start()
-
 # commands to force the downloading of above IERS bulletin file in
 # case a recent one (younger than 30 days) is not present in the cache
 try:
@@ -119,8 +105,21 @@ except Exception as e:
     log.warning ('exception was raised while testing \'tnow.ut1\' at start of '
                  'blackbox; issue with IERS file?: {}'.format(e))
 
+# Data processing pipeline imports
+import set_zogy
+from zogy import *
 
-__version__ = '1.5.3'
+# Satellite detection (https://github.com/FiorenSt/ASTA)
+from ASTA import ASTA
+
+# Solar system object identification
+#sys.path.append("/Software/match2SSO")
+import set_match2SSO as set_m2sso
+import match2SSO as m2sso
+
+
+
+__version__ = '1.5.4'
 keywords_version = '1.2.2'
 
 
@@ -2105,7 +2104,6 @@ def blackbox_reduce (filename):
         # stop processing here if cat_extract and/or trans_extract
         # products exist in reduced folder
 
-        #new_list = glob.glob('{}*'.format(new_base))
         new_list = list_files(new_base)
         ext_list = []
 
@@ -2202,7 +2200,6 @@ def blackbox_reduce (filename):
         # switches, remove relevant files from reduced folder and copy
         # files to the tmp folder; this is not needed if basic
         # reduction was performed, i.e. do_reduction=True
-        #new_list = glob.glob('{}*'.format(new_base))
         new_list = list_files(new_base)
         ext_list = []
 
@@ -2308,7 +2305,6 @@ def blackbox_reduce (filename):
 
     # before continuing, zipped files in tmp folder need to be
     # unzipped/funpacked for optimal_subtraction to process them
-    #tmp_files = glob.glob('{}*.fz'.format(tmp_base))
     tmp_files = list_files(tmp_base, end_str='.fz')
 
 
@@ -2663,7 +2659,6 @@ def blackbox_reduce (filename):
         make_dir (dest_dir)
 
 
-        #adc_files = glob.glob('{}*dRADEC*'.format(tmp_base))
         adc_files = list_files(tmp_base, search_str='dRADEC')
 
 
@@ -3337,10 +3332,25 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     nflat_red = len(flat_list)
     nobject_red = len(object_list)
 
+    # number of thumbnail zips
+    if get_par(set_bb.save_thumbnails_pngs,tel):
+        thumbnails_path = '{}/{}'.format(get_par(thumbnails_dir,tel), date_dir)
+        zip_list = list_files(thumbnails_path, end_str='.zip')
+        nzips = len(zip_list)
+
+        # Older BG data have unzipped directories instead of zips
+        if nzips == 0:
+            if thumbnails_path[0:5] == "gs://":
+                _, path_nobucket = get_bucket_name(thumbnails_path)
+            else:
+                path_nobucket = thumbnails_path
+            path_depth = len([p for p in path_nobucket.split('/') if p])
+            if path_depth > 0:
+                log.info ('Older data: counted unzipped thumbnail dirs')
+            nzips = len(list_folders(thumbnails_path, depth=path_depth+1))
 
     # collect raw image list
     raw_path = get_par(set_bb.raw_dir,tel)
-    #raw_list = glob.glob('{}/{}/*.fits*'.format(raw_path, date_dir))
     log.info ('collecting list of raw frames')
     raw_list = list_files('{}/{}'.format(raw_path, date_dir), search_str='.fits')
 
@@ -3350,6 +3360,8 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     ndark_raw = 0
     nflat_raw = 0
     nobject_raw = 0
+    nobject_notracking = 0
+    first = True
     for f in raw_list:
         if 'bias' in f.lower():
             nbias_raw += 1
@@ -3360,6 +3372,12 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
         elif 'singleobservation' not in f.lower():
             nobject_raw += 1
 
+            if first:
+                log.info ('reading headers of raw object frames')
+            first = False
+            hdr_raw = read_hdulist(f, get_data=False, get_header=True, memmap=True)
+            if 'ISTRACKI' in hdr_raw and str2bool(hdr_raw['ISTRACKI']) == False:
+                nobject_notracking += 1
 
     # maximum filename length for column format
     #max_length = max([len(f.strip()) for f in filenames])
@@ -3395,7 +3413,6 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
         else:
             file2read = filename
 
-
         # read file header
         header = read_hdulist (file2read, get_data=False, get_header=True)
 
@@ -3412,6 +3429,7 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
 
 
     # create table from rows
+    nobject_noref = 0
     names = []
     for i_key, key in enumerate(keys):
         names.append(key)
@@ -3422,11 +3440,30 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     else:
         table = Table(rows=rows, names=names)
 
+        # Count how many images do not have ref images, but ignore the red-
+        # flagged images as dummy trans products are created for those
+        is_obj = np.array([str(t).strip().lower()=='object'
+                           for t in table['IMAGETYP']])
+        is_red = np.array([str(q).strip().lower()=='red'
+                           for q in table['QC-FLAG']])
+        sel = is_obj & ~is_red
+
+        objs = np.array([str(o).strip() for o in table['OBJECT'][sel]])
+        filts = np.array([str(f).strip() for f in table['FILTER'][sel]])
+        for obj, filt in set(zip(objs, filts)):
+            list_ref = list_files('{}/{}'.format(get_par(set_bb.ref_dir,tel),
+                                                 obj),
+                                  search_str='_{}_'.format(filt),
+                                  end_str='_red.fits.fz')
+            if len(list_ref) == 0:
+                n_combo = int(np.sum((objs==obj) & (filts==filt)))
+                log.info ('No ref for {} in {} ({} images)'
+                          .format(obj, filt, n_combo))
+                nobject_noref += n_combo
+
     # order by DATE-OBS
     index_sort = np.argsort(table['DATE-OBS'])
     table = table[index_sort]
-
-
 
     # write table to ASCII file in tmp folder
     tmp_path = get_par(set_bb.tmp_dir,tel)
@@ -3439,8 +3476,7 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     # if table is empty, no files were processed and reduced folder
     # needs to be created before writing the empty table
     if len(rows)==0:
-        red_dir = '{}/{}'.format(red_path, date_dir)
-        make_dir (red_dir)
+        make_dir (full_path)
         ascii.write (table, obslog_tmp, overwrite=True)
     else:
         # write the filled table
@@ -3449,38 +3485,70 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
                      formats=formats, overwrite=True)
 
 
-
     # for MeerLICHT and BlackGEM, save the weather page as a screen
     # shot in tmp folder, and add it as attachment to the mail
+    png_present = False
     if tel=='ML1':
         png_tmp = '{}/{}_SAAOweather.png'.format(tmp_path, date_eve)
         webpage = 'https://suthweather.saao.ac.za'
         width = 1500
         height = 2150
+
     else:
         png_tmp = '{}/{}_LaSilla_meteo.png'.format(tmp_path, date_eve)
-        #webpage = 'https://www.ls.eso.org/lasilla/dimm/meteomonitor.html'
-        #webpage = 'https://archive.eso.org/asm/ambient-server?site=lasilla'
+
+        # Deprecated link:
         # date in format e.g. 28+Oct+2024
-        date_tmp = '{}+{}+{}'.format(date_eve[6:8],
-                                     calendar.month_abbr[int(date[4:6])],
-                                     date[0:4])
-        webpage = ('https://archive.eso.org/asm/ambient-server?'
-                   'night={}&site=lasilla'.format(date_tmp))
+        #date_tmp = '{}+{}+{}'.format(date_eve[6:8],
+        #                             calendar.month_abbr[int(date[4:6])],
+        #                             date[0:4])
+        #webpage = ('https://archive.eso.org/asm/ambient-server?'
+        #           'night={}&site=lasilla'.format(date_tmp))
+
         # the following line is only returning a white stripe, perhaps
         # only the very top of the webpage?
         #webpage = ('https://www.eso.org/asm/ui/publicLog?name=LaSilla&startDate='
         #           '{}'.format(date_eve))
+        webpage = 'https://www.ls.eso.org/lasilla/dimm/meteomonitor.html'
+
         width = 1500
         height = 1150
 
+        if proc_mode != 'night':
+            try:
+                # Get the weather graphs from the archive instead of making a
+                # screenshot of last night's weather and instead of using the
+                # potentially existing image in the bucket (which, in the past,
+                # was the screenshot of the processing night, not necessarily
+                # the observing night).
+                date_next = (datetime.strptime(date_eve, '%Y%m%d') +
+                             timedelta(days=1))
+                ps_img = 'end{}.ps'.format(date_next.strftime('%y%m%d'))
+                webpage = ('https://www.ls.eso.org/lasilla/dimm/Archive/{}'
+                           .format(ps_img))
+                cmd = ["wget", "-N", webpage]
+                result = subprocess.run(cmd, capture_output=True, timeout=180,
+                                        cwd=tmp_path)
+                #log.info(result.stderr.decode('UTF-8'))
+                with Image.open("{}/{}".format(tmp_path, ps_img)) as img:
+                    rotated_img = img.rotate(270, expand=True)
+                    rotated_img.save(png_tmp, "PNG")
+
+                # Succesfully retrieved from archive. Won't make a screenshot
+                weather_screenshot = False
+                remove_files (["{}/{}".format(tmp_path, ps_img)], verbose=True)
+
+            except Exception as e:
+                log.exception ('exception occurred while downloading weather '
+                               'page {}: {}'.format(webpage, e))
 
     # define png destination
     png_dest = '{}/{}/{}'.format(red_path, date_dir, png_tmp.split('/')[-1])
 
-
-    png_present = False
-    if weather_screenshot:
+    # Don't remake screenshot of last night's weather if screenshot already
+    # exists (to prevent overwriting older archival screenshots with the new
+    # processing night's screenshot)
+    if weather_screenshot and not isfile(png_dest):
         try:
 
             log.info ('saving screenshot of {} to {}'.format(webpage, png_tmp))
@@ -3494,15 +3562,13 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
         except Exception as e:
             log.exception ('exception occurred while making screenshot of '
                            'weather page {}: {}'.format(webpage, e))
-            png_tmp = None
-    else:
-        # check if screenshot already exists
-        if isfile(png_dest):
-            copy_file (png_dest, png_tmp, move=False)
-            png_present = True
-        else:
             # do not include screenshot in email
             png_tmp = None
+
+    # check if screenshot already exists
+    elif isfile(png_dest) and not isfile(png_tmp):
+        copy_file (png_dest, png_tmp, move=False)
+        png_present = True
 
 
     # additional info that could be added to body of email
@@ -3515,11 +3581,12 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
                                                        date_dir.replace('/','-'))
     body += '----------------------------------------\n'
 
-    body += ('# raw images:       {} ({} biases, {} darks, {} flats, {} objects)'
+    body += ('# raw images:        {} ({} biases, {} darks, {} flats, {} objects)'
              '\n'.format(nraw, nbias_raw, ndark_raw, nflat_raw, nobject_raw))
-    body += ('# reduced images:   {} ({} biases, {} darks, {} flats, {} objects)'
+    body += ('# reduced images:    {} ({} biases, {} darks, {} flats, {} objects)'
              '\n'.format(nred, nbias_red, ndark_red, nflat_red, nobject_red))
-
+    body += ('# untracked objects: {} (no reduced images)\n'
+             .format(nobject_notracking))
 
     # collect full-source, transient and sso catalog lists, using
     # [list_files] as little as possible
@@ -3528,15 +3595,20 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     log.info ('collecting lists of full-source, transient and sso catalogs, and '
               'counting how many of them are flagged red')
     cat_list = [c for c in all_cats_list if c.endswith('_red_cat.fits')]
-    body += ('# full-source cats: {} ({} red-flagged)\n'.format(
+    body += ('# full-source cats:  {} ({} red-flagged)\n'.format(
         len(cat_list), count_redflags(cat_list)))
 
+    body += ('# no ref image for:  {} objects\n'.format(nobject_noref))
+
     trans_list = [c for c in all_cats_list if c.endswith('_trans.fits')]
-    body += ('# transient cats:   {} ({} red-flagged)\n'.format(
+    body += ('# transient cats:    {} ({} red-flagged)\n'.format(
         len(trans_list), count_redflags(trans_list, key='TQC-FLAG')))
 
+    if get_par(save_thumbnails_pngs,tel):
+        body += ('# thumbnail zips:    {}\n'.format(nzips))
+
     sso_list = [c for c in all_cats_list if c.endswith('_trans_sso.fits')]
-    body += ('# SSO cats:         {} ({} empty)\n'.format(
+    body += ('# SSO cats:          {} ({} empty)\n'.format(
         len(sso_list), count_redflags(sso_list, key='SDUMCAT')))
     body += '\n'
 
@@ -3550,27 +3622,23 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
         # attachment) to a list of interested people
         try:
             # subject
-            recipients = get_par(set_bb.recipients,tel)
             subject = '{} night report {}'.format(tel, date_dir.replace('/','-'))
-            sender = get_par(set_bb.sender,tel)
-            reply_to = get_par(set_bb.reply_to,tel)
-            smtp_server = get_par(set_bb.smtp_server,tel)
-            port = get_par(set_bb.port,tel)
-            use_SSL = get_par(set_bb.use_SSL,tel)
 
             log.info ('sending email with subject {} to {} using smtp server {} '
                       'on port {}'
                       .format(subject, recipients, smtp_server, port))
 
-            send_email (recipients, subject, body,
+            send_email (get_par(set_bb.recipients,tel), subject, body,
                         attachments='{},{}'.format(obslog_tmp, png_tmp),
-                        sender=sender, reply_to=reply_to,
-                        smtp_server=smtp_server, port=port, use_SSL=use_SSL)
+                        sender=get_par(set_bb.sender,tel),
+                        reply_to=get_par(set_bb.reply_to,tel),
+                        smtp_server=get_par(set_bb.smtp_server,tel),
+                        port=get_par(set_bb.port,tel),
+                        use_SSL=get_par(set_bb.use_SSL,tel))
 
         except Exception as e:
             log.exception('exception occurred during sending of email: {}'
                           .format(e))
-
 
     # now that email is sent, move obslog and weather screenshot
     obslog_dest = '{}/{}/{}_{}_obslog.txt'.format(red_path, date_dir,
@@ -3580,8 +3648,6 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
 
     if png_tmp and not png_present:
         copy_file (png_tmp, png_dest, move=True)
-
-
 
     return
 
@@ -3923,7 +3989,6 @@ def clean_tmp (tmp_path, keep_tmp):
 
         else:
             # otherwise fpack its fits images
-            #list_2pack = glob.glob('{}/*.fits'.format(tmp_path))
             list_2pack = list_files(tmp_path, end_str='.fits')
 
             for filename in list_2pack:
@@ -3950,7 +4015,6 @@ def copy_files2keep (src_base, dest_base, ext2keep, move=True, run_fpack=True):
     ext2keep_uniq = list(dict.fromkeys(ext2keep))
 
     # list of all files starting with [src_base]
-    #src_files = glob.glob('{}*'.format(src_base))
     src_files = list_files(src_base)
 
     # change the order of files in src_files to match that in
@@ -4120,7 +4184,7 @@ def copy2cloud(src_base, copy_cat=True, copy_trans=True, copy_thumbnails=True):
         raise ValueError('rclone configuration does not exist - set it up!')
 
     # Retrieve catalog names
-    red_dir = set_bb.red_dir[tel]
+    red_dir = get_par(set_bb.red_dir,tel)
     src_files = list_files(src_base)
     ext2copy = []
     if copy_cat:
@@ -4130,7 +4194,7 @@ def copy2cloud(src_base, copy_cat=True, copy_trans=True, copy_thumbnails=True):
     catalogs = [f for ext in ext2copy for f in src_files if ext in f]
 
     for catalog in catalogs:
-        dest = catalog.replace(red_dir, set_bb.red_dir['BG'].replace(
+        dest = catalog.replace(red_dir, get_par(set_bb.red_dir,'BG').replace(
             'BG', tel)).replace('gs://', '{}:'.format(config))
 
         # Copy the catalog over to the Google Cloud
@@ -4142,10 +4206,10 @@ def copy2cloud(src_base, copy_cat=True, copy_trans=True, copy_thumbnails=True):
             raise NameError(res.stderr)
 
     if copy_thumbnails:
-        thumbnails_dir = set_bb.thumbnails_dir[tel]
+        thumbnails_dir = get_par(set_bb.thumbnails_dir,tel)
         zipname = '{}.zip'.format(src_base.replace(red_dir, thumbnails_dir))
-        dest = zipname.replace(thumbnails_dir, set_bb.thumbnails_dir['BG'
-            ].replace('BG', tel)).replace('gs://','{}:'.format(config))
+        dest = zipname.replace(thumbnails_dir, get_par(set_bb.thumbnails_dir,
+            'BG').replace('BG', tel)).replace('gs://','{}:'.format(config))
 
         # Copy the thumbnails zip over to the Google Cloud
         log.info('Copying {} to {}'.format(zipname, dest))
@@ -7655,14 +7719,6 @@ def sort_files(read_path, search_str, recursive=False):
        buckets.
 
     """
-
-    #glob all raw files and sort
-    #if recursive:
-    #    all_files = sorted(glob.glob('{}/**/{}'.format(read_path, search_str),
-    #                                 recursive=recursive))
-    #else:
-    #    all_files = sorted(glob.glob('{}/{}'.format(read_path, search_str)))
-
 
     # dealing with google cloud bucket?
     google_cloud = (read_path[0:5] == 'gs://')
