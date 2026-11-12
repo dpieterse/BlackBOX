@@ -472,8 +472,9 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
                 python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
                                  'from blackbox import create_obslog; '
                                  'create_obslog (\'{}\', email=True, '
-                                 'tel=\'{}\', weather_screenshot={})\"'
-                                 .format(date, tel, screenshot))
+                                 'tel=\'{}\', proc_mode=\'{}\', '
+                                 ' weather_screenshot={})\"'
+                                 .format(date, tel, proc_mode, screenshot))
 
                 jobname = 'obslog_{}'.format(date_eve)
                 slurm_process (python_cmdstr, nthreads=1, runtime='0:10:00',
@@ -482,7 +483,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
                 jobnames.append(jobname)
 
             else:
-                create_obslog (date, email=True, tel=tel,
+                create_obslog (date, email=True, tel=tel, proc_mode=proc_mode,
                                weather_screenshot=screenshot)
 
         except Exception as e:
@@ -665,7 +666,8 @@ def slurm_process (python_cmdstr, nthreads, runtime, jobname, jobnight,
 
 ################################################################################
 
-def create_obslog (date, email=True, tel=None, weather_screenshot=True):
+def create_obslog (date, email=True, tel=None, proc_mode=None,
+                   weather_screenshot=True):
 
     # extract table with various observables/keywords from the headers
     # of all raw/reduced files of a particular (evening) date,
