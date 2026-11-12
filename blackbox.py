@@ -3623,6 +3623,12 @@ def create_obslog (date, email=True, tel=None, proc_mode=None,
     if email:
         # email the obslog (with the weather page for MeerLICHT as
         # attachment) to a list of interested people
+        recipients = get_par(set_bb.recipients,tel)
+        sender=get_par(set_bb.sender,tel)
+        reply_to=get_par(set_bb.reply_to,tel)
+        smtp_server=get_par(set_bb.smtp_server,tel)
+        port=get_par(set_bb.port,tel)
+        use_SSL=get_par(set_bb.use_SSL,tel)
         try:
             # subject
             subject = '{} night report {}'.format(tel, date_dir.replace('/','-'))
@@ -3631,13 +3637,11 @@ def create_obslog (date, email=True, tel=None, proc_mode=None,
                       'on port {}'
                       .format(subject, recipients, smtp_server, port))
 
-            send_email (get_par(set_bb.recipients,tel), subject, body,
+            send_email (recipients, subject, body,
                         attachments='{},{}'.format(obslog_tmp, png_tmp),
-                        sender=get_par(set_bb.sender,tel),
-                        reply_to=get_par(set_bb.reply_to,tel),
-                        smtp_server=get_par(set_bb.smtp_server,tel),
-                        port=get_par(set_bb.port,tel),
-                        use_SSL=get_par(set_bb.use_SSL,tel))
+                        sender=sender, reply_to=reply_to,
+                        smtp_server=smtp_server, port=port,
+                        use_SSL=use_SSL)
 
         except Exception as e:
             log.exception('exception occurred during sending of email: {}'
