@@ -469,7 +469,8 @@ def run_blackbox (telescope=None, mode=None, date=None, read_path=None,
         # create and email obslog
         log.info ('night processing has finished; creating and emailing obslog')
         try:
-            create_obslog (date, email=True, tel=tel, weather_screenshot=True)
+            create_obslog (date, email=True, tel=tel, proc_mode=proc_mode,
+                           weather_screenshot=True)
         except Exception as e:
             log.exception ('exception was raised in creating obslog: {}'
                            .format(e))
@@ -3302,7 +3303,8 @@ def call_match2SSO(filename, tel):
 
 ################################################################################
 
-def create_obslog (date, email=True, tel=None, weather_screenshot=True):
+def create_obslog (date, email=True, tel=None, proc_mode=None,
+                   weather_screenshot=True):
 
     # extract table with various observables/keywords from the headers
     # of all raw/reduced files of a particular (evening) date,
