@@ -468,7 +468,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
             screenshot = False
 
         try:
-            if False:
+            if True:
                 python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
                                  'from blackbox import create_obslog; '
                                  'create_obslog (\'{}\', email=True, '
