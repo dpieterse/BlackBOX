@@ -3356,7 +3356,8 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
 
     # number of thumbnail zips
     if get_par(set_bb.save_thumbnails_pngs,tel):
-        thumbnails_path = '{}/{}'.format(get_par(thumbnails_dir,tel), date_dir)
+        thumbnails_path = '{}/{}'.format(get_par(set_bb.thumbnails_dir,tel),
+                                         date_dir)
         zip_list = list_files(thumbnails_path, end_str='.zip')
         nzips = len(zip_list)
 
@@ -3626,7 +3627,7 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     body += ('# transient cats:    {} ({} red-flagged)\n'.format(
         len(trans_list), count_redflags(trans_list, key='TQC-FLAG')))
 
-    if get_par(save_thumbnails_pngs,tel):
+    if get_par(set_bb.save_thumbnails_pngs,tel):
         body += ('# thumbnail zips:    {}\n'.format(nzips))
 
     sso_list = [c for c in all_cats_list if c.endswith('_trans_sso.fits')]
