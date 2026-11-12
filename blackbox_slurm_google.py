@@ -561,7 +561,7 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
 
                 try:
 
-                    if False:
+                    if True:
 
                         # execute create_obslog on a compute node
                         python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
@@ -577,9 +577,10 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                         jobnames.append(jobname)
 
                     else:
-                        # currently compute nodes cannot send emails, so
-                        # execute create_obslog on the login node directly
-                        # using adapted version of [create_obslog]
+                        # currently wkhtmltoimage is not installed on the compute
+                        # nodes, so screenshots cannot be made with create_obslog()
+                        # inside this script. Run the function from BlackBOX in the
+                        # container instead (see if True block above).
                         create_obslog (date, email=True, tel=tel,
                                        weather_screenshot=screenshot)
 
