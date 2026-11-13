@@ -236,10 +236,10 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
             continue
 
         if mode == 'night':
-            q.put(filename)
+            queue.put(filename)
         elif is_calib_file(filename):
             if make_masters:
-                q.put(filename)
+                queue.put(filename)
         else:
             files_science.append(filename)
 
@@ -288,7 +288,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
                         'python /Software/BlackBOX/blackbox.py --img_reduce True '
                         '--cat_extract True --trans_extract True --keep_tmp False '
                         '--force_reproc_new {} --image {}'
-                        .format(filename, force_reproc_new))
+                        .format(force_reproc_new, filename))
 
                     log.info ('python command string to execute: {}'
                               .format(python_cmdstr))
@@ -407,7 +407,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
 
         log.info ('reducing {} science frames'.format(len(files_science)))
         for filename in files_science:
-            q.put(filename)
+            queue.put(filename)
 
         jobnames_science = process_queue()
         jobnames += jobnames_science
@@ -432,7 +432,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
                 # add night's headers to header file
                 fits_header = ('{}/data/hdrtables/{}_headers_{}.fits'
                                .format(data_dir, tel, cat_type))
-                path_full = '{}/{}'.format(red_dir, date_dir)
+                path_full = '{}/{}'.format(red_dir[tel], date_dir)
                 end_str = ''
                 if cat_type == 'cat':
                     search_str = '_red_{}.fits'.format(cat_type)
@@ -1152,9 +1152,9 @@ def get_path (date, dir_type):
 
 
     if dir_type == 'read':
-        root_dir = raw_dir
+        root_dir = raw_dir[tel]
     elif dir_type == 'write':
-        root_dir = red_dir
+        root_dir = red_dir[tel]
     else:
         log.error ('[dir_type] not one of "read" or "write"')
 
