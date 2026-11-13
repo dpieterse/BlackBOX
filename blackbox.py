@@ -1,9 +1,23 @@
+import os
+import logging
+import time
+
+# set up log, needs to be done before importing other scripts
+logfmt = ('%(asctime)s.%(msecs)03d [%(levelname)s, %(process)s] %(message)s '
+          '[%(funcName)s, line %(lineno)d]')
+datefmt = '%Y-%m-%dT%H:%M:%S'
+logging.basicConfig(level='INFO', format=logfmt, datefmt=datefmt)
+logFormatter = logging.Formatter(logfmt, datefmt)
+logging.Formatter.converter = time.gmtime #convert time in logger to UTC
+log = logging.getLogger()
+#log.propagate = False
+
+import set_blackbox as set_bb
+
 # setting environment variable OMP_NUM_THREADS to number of threads,
 # (used by e.g. astroscrappy); use value from environment variable
 # SLURM_CPUS_PER_TASK if it is defined, otherwise set_bb.nthreads;
 # needs to be done before numpy is imported in [zogy]
-import os
-import set_blackbox as set_bb
 os.environ['OMP_NUM_THREADS'] = str(os.environ.get('SLURM_CPUS_PER_TASK',
                                                    set_bb.nthreads))
 
@@ -15,7 +29,6 @@ import ephem
 import fitsio
 import gc
 import glob
-import logging
 import pickle
 import platform
 import queue
@@ -25,7 +38,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import time
 #import tracemalloc
 #tracemalloc.start()
 import warnings
@@ -69,17 +81,6 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email.utils import formatdate
 from email import encoders
-
-
-# set up log
-logfmt = ('%(asctime)s.%(msecs)03d [%(levelname)s, %(process)s] %(message)s '
-          '[%(funcName)s, line %(lineno)d]')
-datefmt = '%Y-%m-%dT%H:%M:%S'
-logging.basicConfig(level='INFO', format=logfmt, datefmt=datefmt)
-logFormatter = logging.Formatter(logfmt, datefmt)
-logging.Formatter.converter = time.gmtime #convert time in logger to UTC
-log = logging.getLogger()
-#log.propagate = False
 
 
 # due to regular problems with downloading default IERS file (needed
