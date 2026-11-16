@@ -1,9 +1,23 @@
+import os
+import logging
+import time
+
+# set up log, needs to be done before importing other scripts
+logfmt = ('%(asctime)s.%(msecs)03d [%(levelname)s, %(process)s] %(message)s '
+          '[%(funcName)s, line %(lineno)d]')
+datefmt = '%Y-%m-%dT%H:%M:%S'
+logging.basicConfig(level='INFO', format=logfmt, datefmt=datefmt)
+logFormatter = logging.Formatter(logfmt, datefmt)
+logging.Formatter.converter = time.gmtime #convert time in logger to UTC
+log = logging.getLogger()
+#log.propagate = False
+
+import set_blackbox as set_bb
+
 # setting environment variable OMP_NUM_THREADS to number of threads,
 # (used by e.g. astroscrappy); use value from environment variable
 # SLURM_CPUS_PER_TASK if it is defined, otherwise set_bb.nthreads;
 # needs to be done before numpy is imported in [zogy]
-import os
-import set_blackbox as set_bb
 os.environ['OMP_NUM_THREADS'] = str(os.environ.get('SLURM_CPUS_PER_TASK',
                                                    set_bb.nthreads))
 
@@ -15,7 +29,6 @@ import ephem
 import fitsio
 import gc
 import glob
-import logging
 import pickle
 import platform
 import queue
@@ -25,7 +38,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import time
 #import tracemalloc
 #tracemalloc.start()
 import warnings
@@ -69,17 +81,6 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email.utils import formatdate
 from email import encoders
-
-
-# set up log
-logfmt = ('%(asctime)s.%(msecs)03d [%(levelname)s, %(process)s] %(message)s '
-          '[%(funcName)s, line %(lineno)d]')
-datefmt = '%Y-%m-%dT%H:%M:%S'
-logging.basicConfig(level='INFO', format=logfmt, datefmt=datefmt)
-logFormatter = logging.Formatter(logfmt, datefmt)
-logging.Formatter.converter = time.gmtime #convert time in logger to UTC
-log = logging.getLogger()
-#log.propagate = False
 
 
 # due to regular problems with downloading default IERS file (needed
@@ -469,7 +470,8 @@ def run_blackbox (telescope=None, mode=None, date=None, read_path=None,
         # create and email obslog
         log.info ('night processing has finished; creating and emailing obslog')
         try:
-            create_obslog (date, email=True, tel=tel, weather_screenshot=True)
+            create_obslog (date, email=True, tel=tel, proc_mode=proc_mode,
+                           weather_screenshot=True)
         except Exception as e:
             log.exception ('exception was raised in creating obslog: {}'
                            .format(e))
@@ -3302,7 +3304,8 @@ def call_match2SSO(filename, tel):
 
 ################################################################################
 
-def create_obslog (date, email=True, tel=None, weather_screenshot=True):
+def create_obslog (date, email=True, tel=None, proc_mode=None,
+                   weather_screenshot=True):
 
     # extract table with various observables/keywords from the headers
     # of all raw/reduced files of a particular (evening) date,
@@ -3356,7 +3359,8 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
 
     # number of thumbnail zips
     if get_par(set_bb.save_thumbnails_pngs,tel):
-        thumbnails_path = '{}/{}'.format(get_par(thumbnails_dir,tel), date_dir)
+        thumbnails_path = '{}/{}'.format(get_par(set_bb.thumbnails_dir,tel),
+                                         date_dir)
         zip_list = list_files(thumbnails_path, end_str='.zip')
         nzips = len(zip_list)
 
@@ -3626,7 +3630,7 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     body += ('# transient cats:    {} ({} red-flagged)\n'.format(
         len(trans_list), count_redflags(trans_list, key='TQC-FLAG')))
 
-    if get_par(save_thumbnails_pngs,tel):
+    if get_par(set_bb.save_thumbnails_pngs,tel):
         body += ('# thumbnail zips:    {}\n'.format(nzips))
 
     sso_list = [c for c in all_cats_list if c.endswith('_trans_sso.fits')]
@@ -3642,6 +3646,12 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
     if email:
         # email the obslog (with the weather page for MeerLICHT as
         # attachment) to a list of interested people
+        recipients = get_par(set_bb.recipients,tel)
+        sender=get_par(set_bb.sender,tel)
+        reply_to=get_par(set_bb.reply_to,tel)
+        smtp_server=get_par(set_bb.smtp_server,tel)
+        port=get_par(set_bb.port,tel)
+        use_SSL=get_par(set_bb.use_SSL,tel)
         try:
             # subject
             subject = '{} night report {}'.format(tel, date_dir.replace('/','-'))
@@ -3650,13 +3660,11 @@ def create_obslog (date, email=True, tel=None, weather_screenshot=True):
                       'on port {}'
                       .format(subject, recipients, smtp_server, port))
 
-            send_email (get_par(set_bb.recipients,tel), subject, body,
+            send_email (recipients, subject, body,
                         attachments='{},{}'.format(obslog_tmp, png_tmp),
-                        sender=get_par(set_bb.sender,tel),
-                        reply_to=get_par(set_bb.reply_to,tel),
-                        smtp_server=get_par(set_bb.smtp_server,tel),
-                        port=get_par(set_bb.port,tel),
-                        use_SSL=get_par(set_bb.use_SSL,tel))
+                        sender=sender, reply_to=reply_to,
+                        smtp_server=smtp_server, port=port,
+                        use_SSL=use_SSL)
 
         except Exception as e:
             log.exception('exception occurred during sending of email: {}'

@@ -567,8 +567,9 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                         python_cmdstr = ('python -c \"import set_blackbox as set_bb; '
                                          'from blackbox import create_obslog; '
                                          'create_obslog (\'{}\', email=True, '
-                                         'tel=\'{}\', weather_screenshot={})\"'
-                                         .format(date, tel, screenshot))
+                                         'tel=\'{}\', proc_mode=\'{}\', '
+                                         'weather_screenshot={})\"'
+                                         .format(date, tel, proc_mode, screenshot))
 
                         jobname = '{}_obslog_{}'.format(tel, date_eve)
                         partition = 'p1gb8'
@@ -582,6 +583,7 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                         # inside this script. Run the function from BlackBOX in the
                         # container instead (see if True block above).
                         create_obslog (date, email=True, tel=tel,
+                                       proc_mode=proc_mode,
                                        weather_screenshot=screenshot)
 
                 except Exception as e:
