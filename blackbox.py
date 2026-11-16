@@ -4230,7 +4230,8 @@ def copy2cloud(src_base, copy_cat=True, copy_trans=True, copy_thumbnails=True):
 
         # Copy the catalog over to the Google Cloud
         log.info('Copying {} to {}'.format(catalog, dest))
-        cmd = ['rclone', 'copyto', '-L', catalog, dest]
+        cmd = ['rclone', 'copyto', '-L', '--retries', '10',
+               '--retries-sleep', '1m', catalog, dest]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
             log.critical(res.stderr)
@@ -4244,7 +4245,8 @@ def copy2cloud(src_base, copy_cat=True, copy_trans=True, copy_thumbnails=True):
 
         # Copy the thumbnails zip over to the Google Cloud
         log.info('Copying {} to {}'.format(zipname, dest))
-        cmd = ['rclone', 'copyto', '-L', zipname, dest]
+        cmd = ['rclone', 'copyto', '-L', '--retries', '10',
+               '--retries-sleep', '1m', zipname, dest]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
             log.critical(res.stderr)
