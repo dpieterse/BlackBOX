@@ -369,6 +369,7 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                         # fields with low and high number of expected gaia
                         # sources; default partition:
                         partition = 'p4gb16t'
+                        t_run = runtime
 
                         # if field contains many Gaia sources, use
                         # different partition
@@ -389,6 +390,8 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                                 if ngaia > 2e6:
                                     #partition = 'p8gb64'
                                     partition = 'p16gb64t'
+                                    if t_run == "6:00:00": # Overwrite default
+                                        t_run = "12:00:00"
 
                                 log.info ('estimated # Gaia sources in field '
                                           '({}): {}; using partition {} for {}'
@@ -405,7 +408,7 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
 
                     # process it through a SLURM batch job
                     jobname = filename.split('/')[-1].split('.fits')[0]
-                    slurm_process (python_cmdstr, partition, runtime, jobname,
+                    slurm_process (python_cmdstr, partition, t_run, jobname,
                                    jobnight[tel])
 
                     # append filename to list of files processed

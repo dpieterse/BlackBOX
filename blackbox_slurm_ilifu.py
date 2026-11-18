@@ -293,7 +293,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
                     log.info ('python command string to execute: {}'
                               .format(python_cmdstr))
 
-
+                    t_run = runtime
                     # use single thread for calibration files
                     if np.any([s in filename.lower()
                                for s in ['bias', 'flat', 'dark']]):
@@ -321,6 +321,8 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
 
                                 if ngaia > 1e6:
                                     nthreads = 8
+                                    if t_run == "6:00:00": # Overwrite default
+                                        t_run = "12:00:00"
 
                                 log.info ('estimated # Gaia sources in field ({}): '
                                           '{}; using {} threads for {}'
@@ -334,7 +336,7 @@ def run_blackbox_slurm (date=None, nthreads=4, mode='night', runtime='6:00:00',
 
                     # process it through a SLURM batch job
                     jobname = filename.split('/')[-1].split('.fits')[0]
-                    slurm_process (python_cmdstr, nthreads, runtime, jobname,
+                    slurm_process (python_cmdstr, nthreads, t_run, jobname,
                                    jobnight, date_begin=date_begin)
 
                     # append filename to list of files processed
