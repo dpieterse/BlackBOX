@@ -1219,7 +1219,7 @@ def get_file (queue):
 
         # this while loop below replaces the old [copying]
         # function; it times out after wait_max is reached
-        wait_max = 180
+        wait_max = 360
         t0 = time.time()
         time.sleep(1)
         nsleep = 0
