@@ -353,7 +353,7 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                     log.info ('python command string to execute: {}'
                               .format(python_cmdstr))
 
-
+                    t_run = runtime
                     # use different partitions for bias, flats and object images
                     if 'bias' in filename.lower() or 'dark' in filename.lower():
                         #partition = 'p1gb4t'
@@ -369,7 +369,6 @@ def run_blackbox_slurm (date=None, telescope=None, mode='night',
                         # fields with low and high number of expected gaia
                         # sources; default partition:
                         partition = 'p4gb16t'
-                        t_run = runtime
 
                         # if field contains many Gaia sources, use
                         # different partition
